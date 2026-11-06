@@ -68,7 +68,7 @@ public class MainActivity extends ComponentActivity {
     private long pausedAt;
     private long pausedTotalMs;
     private boolean recordingPaused = false;
-    private long processingStartedAt;
+    private long processingStartedAt;\n    private final Runnable recordingTicker = new Runnable() {\n        @Override public void run() {\n            if (!recording || elapsedText == null) return;\n            long end = recordingPaused ? pausedAt : System.currentTimeMillis();\n            long elapsed = Math.max(0, end - recordingStartedAt - pausedTotalMs) / 1000;\n            elapsedText.setText(String.format(Locale.ROOT, "%02d:%02d", elapsed / 60, elapsed % 60));\n            ui.postDelayed(this, 1000);\n        }\n    };\n    private final Runnable processingTicker = new Runnable() {\n        @Override public void run() {\n            if (processingStartedAt == 0) return;\n            long elapsed = (System.currentTimeMillis() - processingStartedAt) / 1000;\n            setStatus("Локальное распознавание и диаризация · " + elapsed + " с");\n            ui.postDelayed(this, 1000);\n        }\n    };
 
     private final ActivityResultLauncher<String[]> importAudio =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::importSelectedAudio);
@@ -218,7 +218,7 @@ public class MainActivity extends ComponentActivity {
                         }
                         String transcript = formatted.length() == 0 ? result.transcript : formatted.toString().trim();
                         ui.post(() -> {
-                            database.updateTranscript(recordingId, transcript);
+                            ui.removeCallbacks(processingTicker);\n                            processingStartedAt = 0;\n                            database.updateTranscript(recordingId, transcript);
                             database.updateStatus(recordingId, "Готово");
                             refreshLibrary();
                             if (selected != null && selected.id == recordingId) {
@@ -232,7 +232,7 @@ public class MainActivity extends ComponentActivity {
                         });
                     } catch (Exception e) {
                         ui.post(() -> {
-                            database.updateStatus(recordingId, "Ошибка");
+                            ui.removeCallbacks(processingTicker);\n                            processingStartedAt = 0;\n                            database.updateStatus(recordingId, "Ошибка");
                             refreshLibrary();
                             setStatus("Ошибка обработки: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
                             transcribeButton.setEnabled(true);
@@ -511,7 +511,7 @@ public class MainActivity extends ComponentActivity {
 
     @Override protected void onDestroy() {
         try { unregisterReceiver(recordingReceiver); } catch (Exception ignored) {}
-        if (modelRepository != null) modelRepository.close();
+        ui.removeCallbacks(recordingTicker);\n        ui.removeCallbacks(processingTicker);\n        if (modelRepository != null) modelRepository.close();
         if (transcriptionExecutor != null) transcriptionExecutor.shutdownNow();
         if (audioPlayer != null) {
             try { audioPlayer.release(); } catch (Exception ignored) {}
