@@ -288,7 +288,7 @@ public class MainActivity extends ComponentActivity {
                             long processingSeconds = (System.currentTimeMillis() - processingStartedAt) / 1000;
                             processingStartedAt = 0;
                             database.updateTranscript(recordingId, transcript);
-                            database.updateStatus(recordingId, "Готово");
+                            database.updateStatus(recordingId, result.diarizationError == null ? "Готово" : "Расшифровка готова · нет диаризации");
                             refreshLibrary();
                             if (selected != null && selected.id == recordingId) {
                                 selected = new RecordingDb.Recording(selected.id, selected.title,
@@ -296,7 +296,7 @@ public class MainActivity extends ComponentActivity {
                                 transcriptEditor.setText(transcript);
                                 renderTranscriptSegments(transcript);
                             }
-                            setStatus("Готово · обработка заняла " + processingSeconds + " с");
+                            setStatus(result.diarizationError == null\n                                    ? "Расшифровка и диаризация готовы · " + processingSeconds + " с"\n                                    : "Исходная расшифровка сохранена; диаризация не завершилась: " + result.diarizationError);
                             transcribeButton.setEnabled(true);
                         });
                     } catch (Exception e) {
