@@ -50,25 +50,28 @@ final class LocalTranscriptionEngine {
         OfflineStream stream = null;
         OfflineSpeakerDiarization diarizer = null;
         try {
-            OfflineWhisperModelConfig whisper = new OfflineWhisperModelConfig();
-            whisper.setEncoder(encoder.getAbsolutePath());
-            whisper.setDecoder(decoder.getAbsolutePath());
-            whisper.setLanguage(language);
-            whisper.setTask("transcribe");
-            whisper.setEnableTokenTimestamps(true);
-            whisper.setEnableSegmentTimestamps(true);
+            OfflineWhisperModelConfig whisper = OfflineWhisperModelConfig.builder()
+                    .setEncoder(encoder.getAbsolutePath())
+                    .setDecoder(decoder.getAbsolutePath())
+                    .setLanguage(language)
+                    .setTask("transcribe")
+                    .setEnableTokenTimestamps(true)
+                    .setEnableSegmentTimestamps(true)
+                    .build();
 
-            OfflineModelConfig model = new OfflineModelConfig();
-            model.setWhisper(whisper);
-            model.setTokens(tokens.getAbsolutePath());
-            model.setNumThreads(Math.max(1, threads));
-            model.setDebug(false);
-            model.setProvider("cpu");
+            OfflineModelConfig model = OfflineModelConfig.builder()
+                    .setWhisper(whisper)
+                    .setTokens(tokens.getAbsolutePath())
+                    .setNumThreads(Math.max(1, threads))
+                    .setDebug(false)
+                    .setProvider("cpu")
+                    .build();
 
-            OfflineRecognizerConfig asrConfig = new OfflineRecognizerConfig();
-            asrConfig.setModelConfig(model);
-            asrConfig.setDecodingMethod("greedy_search");
-            recognizer = new OfflineRecognizer(null, asrConfig);
+            OfflineRecognizerConfig asrConfig = OfflineRecognizerConfig.builder()
+                    .setOfflineModelConfig(model)
+                    .setDecodingMethod("greedy_search")
+                    .build();
+            recognizer = new OfflineRecognizer(asrConfig);
             stream = recognizer.createStream();
             stream.acceptWaveform(audio.samples, audio.sampleRate);
             recognizer.decode(stream);
@@ -76,35 +79,40 @@ final class LocalTranscriptionEngine {
             String transcript = asr.getText() == null ? "" : asr.getText().trim();
 
             OfflineSpeakerSegmentationPyannoteModelConfig pyannote =
-                    new OfflineSpeakerSegmentationPyannoteModelConfig();
-            pyannote.setModel(segmentation.getAbsolutePath());
-            pyannote.setWindowShiftRatio(0.1f);
+                    OfflineSpeakerSegmentationPyannoteModelConfig.builder()
+                            .setModel(segmentation.getAbsolutePath())
+                            .setWindowShiftRatio(0.1f)
+                            .build();
             OfflineSpeakerSegmentationModelConfig segmentationConfig =
-                    new OfflineSpeakerSegmentationModelConfig();
-            segmentationConfig.setPyannote(pyannote);
-            segmentationConfig.setNumThreads(Math.max(1, threads));
-            segmentationConfig.setProvider("cpu");
-            segmentationConfig.setDebug(false);
+                    OfflineSpeakerSegmentationModelConfig.builder()
+                            .setPyannote(pyannote)
+                            .setNumThreads(Math.max(1, threads))
+                            .setProvider("cpu")
+                            .setDebug(false)
+                            .build();
 
-            SpeakerEmbeddingExtractorConfig embeddingConfig = new SpeakerEmbeddingExtractorConfig();
-            embeddingConfig.setModel(embedding.getAbsolutePath());
-            embeddingConfig.setNumThreads(Math.max(1, threads));
-            embeddingConfig.setProvider("cpu");
-            embeddingConfig.setDebug(false);
+            SpeakerEmbeddingExtractorConfig embeddingConfig = SpeakerEmbeddingExtractorConfig.builder()
+                    .setModel(embedding.getAbsolutePath())
+                    .setNumThreads(Math.max(1, threads))
+                    .setProvider("cpu")
+                    .setDebug(false)
+                    .build();
 
-            FastClusteringConfig clustering = new FastClusteringConfig();
-            clustering.setNumClusters(-1);
-            clustering.setThreshold(0.5f);
-            clustering.setComputeConfidence(true);
-            OfflineSpeakerDiarizationConfig diarizationConfig = new OfflineSpeakerDiarizationConfig();
-            diarizationConfig.setSegmentation(segmentationConfig);
-            diarizationConfig.setEmbedding(embeddingConfig);
-            diarizationConfig.setClustering(clustering);
-            diarizationConfig.setMinDurationOn(0.2f);
-            diarizationConfig.setMinDurationOff(0.5f);
-            diarizer = new OfflineSpeakerDiarization(null, diarizationConfig);
-            if (diarizer.sampleRate() != audio.sampleRate) {
-                throw new IllegalStateException("Модель диаризации требует " + diarizer.sampleRate()
+            FastClusteringConfig clustering = FastClusteringConfig.builder()
+                    .setNumClusters(-1)
+                    .setThreshold(0.5f)
+                    .setComputeConfidence(true)
+                    .build();
+            OfflineSpeakerDiarizationConfig diarizationConfig = OfflineSpeakerDiarizationConfig.builder()
+                    .setSegmentation(segmentationConfig)
+                    .setEmbedding(embeddingConfig)
+                    .setClustering(clustering)
+                    .setMinDurationOn(0.2f)
+                    .setMinDurationOff(0.5f)
+                    .build();
+            diarizer = new OfflineSpeakerDiarization(diarizationConfig);
+            if (diarizer.getSampleRate() != audio.sampleRate) {
+                throw new IllegalStateException("Модель диаризации требует " + diarizer.getSampleRate()
                         + " Гц, декодировано " + audio.sampleRate + " Гц");
             }
             OfflineSpeakerDiarizationSegment[] speakerSegments = diarizer.process(audio.samples);
