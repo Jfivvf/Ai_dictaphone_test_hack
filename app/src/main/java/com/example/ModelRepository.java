@@ -13,7 +13,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 final class ModelRepository {
-    private static final String WHISPER = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2";
+    private static final String WHISPER = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.tar.bz2";
     private static final String SEGMENT = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2";
     private static final String EMBED = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx";
     private final File root;
@@ -36,9 +36,9 @@ final class ModelRepository {
             try {
                 File whisperDir = new File(root, "whisper");
                 whisperDir.mkdirs();
-                File enc = new File(whisperDir, "tiny-encoder.int8.onnx");
-                File dec = new File(whisperDir, "tiny-decoder.onnx");
-                File tok = new File(whisperDir, "tiny-tokens.txt");
+                File enc = new File(whisperDir, "small-encoder.int8.onnx");
+                File dec = new File(whisperDir, "small-decoder.onnx");
+                File tok = new File(whisperDir, "small-tokens.txt");
                 if (!enc.isFile() || !dec.isFile() || !tok.isFile()) {
                     File archive = new File(root, "whisper.tar.bz2");
                     download(WHISPER, archive, "Загрузка Whisper", callback);
