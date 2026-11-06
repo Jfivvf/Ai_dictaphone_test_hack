@@ -9,7 +9,6 @@ import android.net.Uri;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.ArrayList;
 
 final class AudioDecoder {
     static final int TARGET_RATE = 16000;
@@ -58,7 +57,7 @@ final class AudioDecoder {
             codec.configure(format, null, null, 0);
             codec.start();
 
-            ArrayList<Float> mono = new ArrayList<>();
+            FloatAccumulator mono = new FloatAccumulator();
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             boolean inputDone = false;
             boolean outputDone = false;
@@ -102,8 +101,7 @@ final class AudioDecoder {
                 }
             }
 
-            float[] source = new float[mono.size()];
-            for (int i = 0; i < source.length; i++) source[i] = mono.get(i);
+            float[] source = mono.toArray();
             float[] resampled = resample(source, outputRate, TARGET_RATE);
             if (resampled.length == 0) throw new IOException("Аудиодорожка пуста");
             return new AudioData(resampled, TARGET_RATE);
@@ -115,6 +113,26 @@ final class AudioDecoder {
                 codec.release();
             }
             extractor.release();
+        }
+    }
+
+    private static final class FloatAccumulator {
+        private float[] data = new float[16384];
+        private int size = 0;
+
+        void add(float value) {
+            if (size == data.length) {
+                float[] grown = new float[data.length * 2];
+                System.arraycopy(data, 0, grown, 0, data.length);
+                data = grown;
+            }
+            data[size++] = value;
+        }
+
+        float[] toArray() {
+            float[] result = new float[size];
+            System.arraycopy(data, 0, result, 0, size);
+            return result;
         }
     }
 
