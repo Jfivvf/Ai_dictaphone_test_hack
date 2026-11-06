@@ -38,12 +38,12 @@ final class ModelRepository {
                 File whisperDir = new File(root, "whisper");
                 whisperDir.mkdirs();
                 File enc = new File(whisperDir, "small-encoder.int8.onnx");
-                File dec = new File(whisperDir, "small-decoder.onnx");
+                File dec = new File(whisperDir, "small-decoder.int8.onnx");
                 File tok = new File(whisperDir, "small-tokens.txt");
                 if (!enc.isFile() || !dec.isFile() || !tok.isFile()) {
                     File archive = new File(root, "whisper.tar.bz2");
                     download(WHISPER, archive, "Загрузка Whisper", 639387718L, callback);
-                    extractFlat(archive, whisperDir, "small-encoder.int8.onnx", "small-decoder.onnx", "small-tokens.txt");
+                    extractFlat(archive, whisperDir, "small-encoder.int8.onnx", "small-decoder.int8.onnx", "small-tokens.txt");
                     archive.delete();
                 }
 
