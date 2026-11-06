@@ -1,23 +1,25 @@
-# Java Android application
+# Java-only Android application
 
-This branch is migrating the launcher and core audio workflow to Java while retaining existing Kotlin UI modules only where they do not conflict with the Java launcher.
+The Android application source is Java-only. Legacy Kotlin application and test sources, Kotlin Gradle plugins, Jetpack Compose, Navigation Compose, and Kotlin-only dependencies have been removed from this branch.
+
+Gradle build files still use the Gradle Kotlin DSL (.gradle.kts); this is build configuration, not Kotlin application code and does not add a Kotlin compiler/plugin to the Android app.
 
 ## Implemented in this branch
 
-- Native Android audio recording using `MediaRecorder` in a microphone foreground service.
+- Native Android audio recording using MediaRecorder in a microphone foreground service.
 - Audio import through the Storage Access Framework into app-private storage.
 - Local SQLite recording metadata and transcript persistence.
 - Manual transcript editor and PDF export.
-- Local audio decoding with `MediaExtractor` + `MediaCodec`, downmixing to mono and resampling to 16 kHz.
+- Local audio decoding with MediaExtractor + MediaCodec, downmixing to mono and resampling to 16 kHz.
 - Real offline ASR through the Sherpa-ONNX Android AAR and multilingual Whisper Small.
 - Real offline speaker diarization through Sherpa-ONNX OfflineSpeakerDiarization (Pyannote segmentation + 3D-Speaker embeddings).
 - Word/token timestamp alignment to diarization intervals; speaker turns are displayed with start/end timecodes.
 - Tap a transcript turn to start playback at its timecode.
-- Model files are downloaded on first transcription, cached under app-private `files/models`, and reused offline.
+- Model files are downloaded on first transcription, cached under app-private files/models, and reused offline.
 
 ## Models and runtime
 
-- Sherpa-ONNX Android AAR: release v2.0.1, downloaded during Gradle `preBuild` and checked against the published SHA-256 digest.
+- Sherpa-ONNX Android AAR: release v2.0.1, downloaded during Gradle preBuild and checked against the published SHA-256 digest.
 - ASR: multilingual Whisper Small, quantized encoder and full decoder; Russian is selected as the initial recognition language.
 - Diarization segmentation: Pyannote segmentation 3.0.
 - Speaker embeddings: 3D-Speaker ERes2Net base.
@@ -35,7 +37,7 @@ Model downloads are substantial. The first transcription needs an internet conne
 
 ## Current limitations / validation still required
 
-- A successful Gradle build is required before the APK can be considered buildable; GitHub Actions is running the first build check.
+- The Java-only Gradle build must pass in CI before an APK can be considered buildable.
 - The pipeline still requires validation against real Russian multi-speaker recordings on physical Android devices, especially overlapping speech, short turns, background noise, and long recordings.
 - The current transcript editor stores the rendered speaker/timecode text. A structured segment table with independently editable speaker IDs and exact sub-second timestamps is a follow-up persistence migration.
 - Current playback navigation jumps to the start of a speaker turn; it does not yet stop automatically at that turn's end.
