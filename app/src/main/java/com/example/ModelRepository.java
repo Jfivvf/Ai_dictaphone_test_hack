@@ -43,6 +43,7 @@ final class ModelRepository {
                 if (!enc.isFile() || !dec.isFile() || !tok.isFile()) {
                     File archive = new File(root, "whisper.tar.bz2");
                     download(WHISPER, archive, "Загрузка Whisper", 639387718L, callback);
+                    main.post(() -> callback.progress("Распаковка модели Whisper", -1));
                     extractFlat(archive, whisperDir, "small-encoder.int8.onnx", "small-decoder.int8.onnx", "small-tokens.txt");
                     archive.delete();
                 }
@@ -53,6 +54,7 @@ final class ModelRepository {
                 if (!seg.isFile()) {
                     File archive = new File(root, "segmentation.tar.bz2");
                     download(SEGMENT, archive, "Загрузка сегментации речи", 6958444L, callback);
+                    main.post(() -> callback.progress("Распаковка модели сегментации", -1));
                     extractFlat(archive, diarDir, "model.onnx");
                     archive.delete();
                     File model = new File(diarDir, "model.onnx");
@@ -73,6 +75,7 @@ final class ModelRepository {
     private void download(String url, File target, String label, long expectedBytes, Callback callback) throws Exception {
         if (target.isFile() && target.length() > 0) return;
         File part = new File(target.getParentFile(), target.getName() + ".part");
+        main.post(() -> callback.progress(label + " · подключение", -1));
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(20000);
         c.setReadTimeout(120000);
