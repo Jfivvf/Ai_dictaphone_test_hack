@@ -330,7 +330,7 @@ public class MainActivity extends ComponentActivity {
             }
             String speaker = line.substring(speakerAt, colon);
             String speech = line.substring(colon + 1).trim();
-            Button segment = button(startText + "   " + speaker + "\\n" + speech);
+            Button segment = button(startText + "   " + speaker + "\n" + speech);
             segment.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             segment.setOnClickListener(v -> playFromTimestamp(startMs));
             segmentList.addView(segment);
