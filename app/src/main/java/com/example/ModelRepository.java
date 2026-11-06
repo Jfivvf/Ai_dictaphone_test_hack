@@ -9,6 +9,7 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -42,7 +43,7 @@ final class ModelRepository {
                 if (!enc.isFile() || !dec.isFile() || !tok.isFile()) {
                     File archive = new File(root, "whisper.tar.bz2");
                     download(WHISPER, archive, "Загрузка Whisper", callback);
-                    extractFlat(archive, whisperDir);
+                    extractFlat(archive, whisperDir, "small-encoder.int8.onnx", "small-decoder.onnx", "small-tokens.txt");
                     archive.delete();
                 }
 
@@ -52,7 +53,7 @@ final class ModelRepository {
                 if (!seg.isFile()) {
                     File archive = new File(root, "segmentation.tar.bz2");
                     download(SEGMENT, archive, "Загрузка сегментации речи", callback);
-                    extractFlat(archive, diarDir);
+                    extractFlat(archive, diarDir, "model.onnx");
                     archive.delete();
                     File model = new File(diarDir, "model.onnx");
                     if (model.isFile() && !model.renameTo(seg)) throw new IOException("Не удалось подготовить модель сегментации");
@@ -98,14 +99,14 @@ final class ModelRepository {
         if (!part.renameTo(target)) throw new IOException("Не удалось сохранить скачанную модель");
     }
 
-    private void extractFlat(File archive, File destination) throws Exception {
+    private void extractFlat(File archive, File destination, String... keepNames) throws Exception {
         try (InputStream file = new BufferedInputStream(new FileInputStream(archive));
              InputStream bz = new BZip2CompressorInputStream(file);
              TarArchiveInputStream tar = new TarArchiveInputStream(bz)) {
             TarArchiveEntry entry;
             while ((entry = tar.getNextTarEntry()) != null) {
                 String name = new File(entry.getName()).getName();
-                if (name.isEmpty() || entry.isDirectory()) continue;
+                if (name.isEmpty() || entry.isDirectory() || !Arrays.asList(keepNames).contains(name)) continue;
                 File outFile = new File(destination, name);
                 try (OutputStream out = new BufferedOutputStream(new FileOutputStream(outFile))) {
                     byte[] b = new byte[65536];
