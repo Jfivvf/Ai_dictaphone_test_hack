@@ -165,7 +165,8 @@ public class MainActivity extends ComponentActivity {
             setStatus("Сначала выберите аудиозапись");
             return;
         }
-        File audio = new File(selected.audioPath);
+        final RecordingDb.Recording recordingToProcess = selected;
+        File audio = new File(recordingToProcess.audioPath);
         if (!audio.isFile()) {
             setStatus("Исходный аудиофайл не найден");
             return;
@@ -180,8 +181,8 @@ public class MainActivity extends ComponentActivity {
             @Override public void ready(File encoder, File decoder, File tokens,
                                         File segmentation, File embedding) {
                 setStatus("Декодирование аудио…");
-                final String audioPath = selected.audioPath;
-                final long recordingId = selected.id;
+                final String audioPath = recordingToProcess.audioPath;
+                final long recordingId = recordingToProcess.id;
                 transcriptionExecutor.execute(() -> {
                     try {
                         AudioDecoder.AudioData data = AudioDecoder.decode(MainActivity.this, audioPath);
@@ -320,20 +321,33 @@ public class MainActivity extends ComponentActivity {
             if (close < 0 || speakerAt < 0 || colon < 0) continue;
             String timeRange = line.substring(1, close);
             String startText = timeRange.split("–")[0].trim();
-            String[] mmss = startText.split(":");
-            if (mmss.length != 2) continue;
-            long startMs;
-            try {
-                startMs = (Long.parseLong(mmss[0]) * 60 + Long.parseLong(mmss[1])) * 1000;
-            } catch (NumberFormatException ignored) {
-                continue;
-            }
+            long startMs = parseTimecode(startText);
+            if (startMs < 0) continue;
             String speaker = line.substring(speakerAt, colon);
             String speech = line.substring(colon + 1).trim();
             Button segment = button(startText + "   " + speaker + "\n" + speech);
             segment.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             segment.setOnClickListener(v -> playFromTimestamp(startMs));
             segmentList.addView(segment);
+        }
+    }
+
+    private long parseTimecode(String value) {
+        try {
+            String[] parts = value.split(":");
+            if (parts.length != 3) return -1;
+            String[] secondsAndMillis = parts[2].split("\\.");
+            if (secondsAndMillis.length != 2) return -1;
+            long hours = Long.parseLong(parts[0]);
+            long minutes = Long.parseLong(parts[1]);
+            long seconds = Long.parseLong(secondsAndMillis[0]);
+            String millisText = secondsAndMillis[1];
+            while (millisText.length() < 3) millisText += "0";
+            if (millisText.length() > 3) millisText = millisText.substring(0, 3);
+            long millis = Long.parseLong(millisText);
+            return (((hours * 60 + minutes) * 60 + seconds) * 1000) + millis;
+        } catch (NumberFormatException error) {
+            return -1;
         }
     }
 
