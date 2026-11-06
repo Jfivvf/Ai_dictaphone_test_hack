@@ -77,6 +77,40 @@ class DictaphoneRepository(private val context: Context) {
         saveEmergencyBackup()
     }
 
+    fun addTagToRecording(recordingId: String, tag: String) {
+        val normalized = tag.trim().removePrefix("#")
+        if (normalized.isBlank()) return
+        _recordings.value = _recordings.value.map { recording ->
+            if (recording.id == recordingId && normalized !in recording.tags) {
+                recording.copy(tags = recording.tags + normalized)
+            } else recording
+        }
+        saveEmergencyBackup()
+    }
+
+    fun removeTagFromRecording(recordingId: String, tag: String) {
+        _recordings.value = _recordings.value.map { recording ->
+            if (recording.id == recordingId) recording.copy(tags = recording.tags - tag) else recording
+        }
+        saveEmergencyBackup()
+    }
+
+    fun toggleSegmentSpeaker(recordingId: String, segmentId: String) {
+        _recordings.value = _recordings.value.map { recording ->
+            if (recording.id != recordingId) return@map recording
+            val speakers = recording.speakersList
+            if (speakers.size < 2) return@map recording
+            val segments = recording.segments.map { segment ->
+                if (segment.id != segmentId) segment else {
+                    val currentIndex = speakers.indexOf(segment.speaker).coerceAtLeast(0)
+                    segment.copy(speaker = speakers[(currentIndex + 1) % speakers.size])
+                }
+            }
+            recording.copy(segments = segments)
+        }
+        saveEmergencyBackup()
+    }
+
     fun toggleFavorite(recordingId: String) {
         _recordings.value = _recordings.value.map {
             if (it.id == recordingId) it.copy(isFavorite = !it.isFavorite) else it

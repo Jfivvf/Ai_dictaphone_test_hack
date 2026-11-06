@@ -225,10 +225,6 @@ class DictaphoneViewModel @JvmOverloads constructor(
         repository.removeTagFromRecording(recordingId, tag)
     }
 
-    fun reDiarize(recordingId: String, speakerCount: Int = 2) {
-        repository.reDiarizeRecording(recordingId, speakerCount)
-    }
-
     fun toggleSegmentSpeaker(recordingId: String, segmentId: String) {
         repository.toggleSegmentSpeaker(recordingId, segmentId)
     }

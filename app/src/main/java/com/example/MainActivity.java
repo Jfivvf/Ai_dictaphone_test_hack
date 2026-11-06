@@ -9,8 +9,11 @@ import android.content.pm.PackageManager;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.pdf.PdfDocument;
+import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -36,17 +39,25 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends ComponentActivity {
     private static final int REQUEST_AUDIO_PERMISSION = 701;
     private RecordingDb database;
     private LinearLayout root;
     private LinearLayout library;
+    private LinearLayout segmentList;
+    private MediaPlayer audioPlayer;
     private EditText transcriptEditor;
     private TextView selectedTitle;
     private TextView statusText;
     private RecordingDb.Recording selected;
     private boolean recording = false;
+    private ModelRepository modelRepository;
+    private ExecutorService transcriptionExecutor;
+    private Handler ui = new Handler(Looper.getMainLooper());
+    private Button transcribeButton;
 
     private final ActivityResultLauncher<String[]> importAudio =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::importSelectedAudio);
@@ -77,6 +88,8 @@ public class MainActivity extends ComponentActivity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         database = new RecordingDb(this);
+        modelRepository = new ModelRepository(this);
+        transcriptionExecutor = Executors.newSingleThreadExecutor();
         buildInterface();
         refreshLibrary();
 
@@ -129,6 +142,9 @@ public class MainActivity extends ComponentActivity {
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         transcriptEditor.setHint("Текст расшифровки");
         root.addView(transcriptEditor, new LinearLayout.LayoutParams(-1, dp(220)));
+        segmentList = new LinearLayout(this);
+        segmentList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(segmentList);
 
         Button saveText = button("Сохранить текст");
         saveText.setOnClickListener(v -> saveTranscript());
@@ -139,6 +155,87 @@ public class MainActivity extends ComponentActivity {
             exportPdf.launch(safeFileName(selected.title) + ".pdf");
         });
         root.addView(pdfButton);
+        transcribeButton = button("Расшифровать и определить говорящих");
+        transcribeButton.setOnClickListener(v -> transcribeSelected());
+        root.addView(transcribeButton);
+    }
+
+    private void transcribeSelected() {
+        if (selected == null) {
+            setStatus("Сначала выберите аудиозапись");
+            return;
+        }
+        final RecordingDb.Recording recordingToProcess = selected;
+        File audio = new File(recordingToProcess.audioPath);
+        if (!audio.isFile()) {
+            setStatus("Исходный аудиофайл не найден");
+            return;
+        }
+        transcribeButton.setEnabled(false);
+        database.updateStatus(recordingToProcess.id, "Подготовка моделей");
+        refreshLibrary();
+        setStatus("Подготовка локальных моделей…");
+        modelRepository.prepare(new ModelRepository.Callback() {
+            @Override public void progress(String label, int percent) {
+                setStatus(percent >= 0 ? label + " · " + percent + "%" : label);
+            }
+
+            @Override public void ready(File encoder, File decoder, File tokens,
+                                        File segmentation, File embedding) {
+                setStatus("Декодирование аудио…");
+                final String audioPath = recordingToProcess.audioPath;
+                final long recordingId = recordingToProcess.id;
+                transcriptionExecutor.execute(() -> {
+                    try {
+                        AudioDecoder.AudioData data = AudioDecoder.decode(MainActivity.this, audioPath);
+                        ui.post(() -> setStatus("Распознавание речи и диаризация…"));
+                        LocalTranscriptionEngine.Result result = LocalTranscriptionEngine.process(
+                                data, encoder, decoder, tokens, segmentation, embedding, "ru",
+                                Math.max(2, Runtime.getRuntime().availableProcessors() - 1));
+                        StringBuilder formatted = new StringBuilder();
+                        for (LocalTranscriptionEngine.Segment segment : result.segments) {
+                            formatted.append("[")
+                                    .append(LocalTranscriptionEngine.formatTime(segment.startMs))
+                                    .append(" – ")
+                                    .append(LocalTranscriptionEngine.formatTime(segment.endMs))
+                                    .append("] Спикер ")
+                                    .append(segment.speaker + 1)
+                                    .append(": ")
+                                    .append(segment.text)
+                                    .append("\n\n");
+                        }
+                        String transcript = formatted.length() == 0 ? result.transcript : formatted.toString().trim();
+                        ui.post(() -> {
+                            database.updateTranscript(recordingId, transcript);
+                            database.updateStatus(recordingId, "Готово");
+                            refreshLibrary();
+                            if (selected != null && selected.id == recordingId) {
+                                selected = new RecordingDb.Recording(selected.id, selected.title,
+                                        selected.audioPath, transcript, selected.createdAt, "Обработано");
+                                transcriptEditor.setText(transcript);
+                                renderTranscriptSegments(transcript);
+                            }
+                            setStatus("Готово · локальная транскрипция и диаризация завершены");
+                            transcribeButton.setEnabled(true);
+                        });
+                    } catch (Exception e) {
+                        ui.post(() -> {
+                            database.updateStatus(recordingId, "Ошибка");
+                            refreshLibrary();
+                            setStatus("Ошибка обработки: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                            transcribeButton.setEnabled(true);
+                        });
+                    }
+                });
+            }
+
+            @Override public void failed(Exception error) {
+                database.updateStatus(recordingToProcess.id, "Ошибка моделей");
+                refreshLibrary();
+                setStatus("Не удалось подготовить модели: " + error.getMessage());
+                transcribeButton.setEnabled(true);
+            }
+        });
     }
 
     private void toggleRecording() {
@@ -217,13 +314,81 @@ public class MainActivity extends ComponentActivity {
         selected = item;
         selectedTitle.setText("Расшифровка · " + item.title);
         transcriptEditor.setText(item.transcript);
+        renderTranscriptSegments(item.transcript);
         setStatus("Выбрана запись");
+    }
+
+    private void renderTranscriptSegments(String transcript) {
+        if (segmentList == null) return;
+        segmentList.removeAllViews();
+        if (transcript == null || transcript.trim().isEmpty()) return;
+        for (String line : transcript.split("\\n")) {
+            if (!line.startsWith("[")) continue;
+            int close = line.indexOf(']');
+            int speakerAt = line.indexOf("Спикер ", close);
+            int colon = line.indexOf(':', speakerAt);
+            if (close < 0 || speakerAt < 0 || colon < 0) continue;
+            String timeRange = line.substring(1, close);
+            String startText = timeRange.split("–")[0].trim();
+            long startMs = parseTimecode(startText);
+            if (startMs < 0) continue;
+            String speaker = line.substring(speakerAt, colon);
+            String speech = line.substring(colon + 1).trim();
+            Button segment = button(startText + "   " + speaker + "\n" + speech);
+            segment.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            segment.setOnClickListener(v -> playFromTimestamp(startMs));
+            segmentList.addView(segment);
+        }
+    }
+
+    private long parseTimecode(String value) {
+        try {
+            String[] parts = value.split(":");
+            if (parts.length != 3) return -1;
+            String[] secondsAndMillis = parts[2].split("\\.");
+            if (secondsAndMillis.length != 2) return -1;
+            long hours = Long.parseLong(parts[0]);
+            long minutes = Long.parseLong(parts[1]);
+            long seconds = Long.parseLong(secondsAndMillis[0]);
+            String millisText = secondsAndMillis[1];
+            while (millisText.length() < 3) millisText += "0";
+            if (millisText.length() > 3) millisText = millisText.substring(0, 3);
+            long millis = Long.parseLong(millisText);
+            return (((hours * 60 + minutes) * 60 + seconds) * 1000) + millis;
+        } catch (NumberFormatException error) {
+            return -1;
+        }
+    }
+
+    private void playFromTimestamp(long positionMs) {
+        if (selected == null || !new File(selected.audioPath).isFile()) {
+            setStatus("Аудиофайл недоступен");
+            return;
+        }
+        try {
+            if (audioPlayer != null) {
+                audioPlayer.release();
+                audioPlayer = null;
+            }
+            audioPlayer = new MediaPlayer();
+            audioPlayer.setDataSource(selected.audioPath);
+            audioPlayer.setOnPreparedListener(player -> {
+                player.seekTo((int) positionMs);
+                player.start();
+                setStatus("Воспроизведение с " + LocalTranscriptionEngine.formatTime(positionMs));
+            });
+            audioPlayer.setOnCompletionListener(player -> setStatus("Воспроизведение завершено"));
+            audioPlayer.prepareAsync();
+        } catch (Exception e) {
+            setStatus("Не удалось воспроизвести аудио: " + e.getMessage());
+        }
     }
 
     private void saveTranscript() {
         if (selected == null) { setStatus("Сначала выберите запись"); return; }
         String text = transcriptEditor.getText().toString();
         database.updateTranscript(selected.id, text);
+        renderTranscriptSegments(text);
         selected = new RecordingDb.Recording(selected.id, selected.title, selected.audioPath,
                 text, selected.createdAt, selected.status);
         setStatus("Текст сохранён");
@@ -309,6 +474,12 @@ public class MainActivity extends ComponentActivity {
 
     @Override protected void onDestroy() {
         try { unregisterReceiver(recordingReceiver); } catch (Exception ignored) {}
+        if (modelRepository != null) modelRepository.close();
+        if (transcriptionExecutor != null) transcriptionExecutor.shutdownNow();
+        if (audioPlayer != null) {
+            try { audioPlayer.release(); } catch (Exception ignored) {}
+            audioPlayer = null;
+        }
         database.close();
         super.onDestroy();
     }

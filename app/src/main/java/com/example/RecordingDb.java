@@ -46,6 +46,12 @@ final class RecordingDb extends SQLiteOpenHelper {
         getWritableDatabase().update("recordings", values, "id=?", new String[]{String.valueOf(id)});
     }
 
+    void updateStatus(long id, String status) {
+        ContentValues values = new ContentValues();
+        values.put("status", status);
+        getWritableDatabase().update("recordings", values, "id=?", new String[]{String.valueOf(id)});
+    }
+
     List<Recording> all() {
         List<Recording> items = new ArrayList<>();
         try (Cursor c = getReadableDatabase().rawQuery(

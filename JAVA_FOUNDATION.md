@@ -1,44 +1,49 @@
-# Java Android foundation
+# Java Android application
 
-This branch adds a native Java entry point and the first real device-side workflows to the existing Android project.
+This branch is migrating the launcher and core audio workflow to Java while retaining existing Kotlin UI modules only where they do not conflict with the Java launcher.
 
-## Implemented
+## Implemented in this branch
 
-- Audio capture through Android `MediaRecorder`.
-- Foreground microphone service so recording can continue while the Activity is not visible.
-- Import through the Storage Access Framework; selected audio is copied into the app-private recordings directory.
-- Local SQLite catalogue for recording metadata and transcript text.
-- Manual transcript editing and persistence.
-- PDF export through Android `PdfDocument`.
-- Empty library is shown as empty; no sample recordings or fabricated transcripts are inserted.
-- No network calls are made by the recording, import, library, or PDF workflows. Android backup is disabled.
+- Native Android audio recording using `MediaRecorder` in a microphone foreground service.
+- Audio import through the Storage Access Framework into app-private storage.
+- Local SQLite recording metadata and transcript persistence.
+- Manual transcript editor and PDF export.
+- Local audio decoding with `MediaExtractor` + `MediaCodec`, downmixing to mono and resampling to 16 kHz.
+- Real offline ASR through the Sherpa-ONNX Android AAR and multilingual Whisper Small.
+- Real offline speaker diarization through Sherpa-ONNX OfflineSpeakerDiarization (Pyannote segmentation + 3D-Speaker embeddings).
+- Word/token timestamp alignment to diarization intervals; speaker turns are displayed with start/end timecodes.
+- Tap a transcript turn to start playback at its timecode.
+- Model files are downloaded on first transcription, cached under app-private `files/models`, and reused offline.
 
-## Existing ML contract
+## Models and runtime
 
-The sibling `Proj_audio` repository defines Python interfaces `WhisperBase` and `LlamaBase`. The Whisper contract expects a Java class named `ru.hck.voice.bridge.WhisperBridge` with setters for language, threads, beam size, best-of, temperature, temperature increment, translation, timestamps and context, plus initialize/transcribe/release methods.
+- Sherpa-ONNX Android AAR: release v2.0.1, downloaded during Gradle `preBuild` and checked against the published SHA-256 digest.
+- ASR: multilingual Whisper Small, quantized encoder and full decoder; Russian is selected as the initial recognition language.
+- Diarization segmentation: Pyannote segmentation 3.0.
+- Speaker embeddings: 3D-Speaker ERes2Net base.
+- Runtime provider: CPU. Audio decoding and model inference happen locally. Model download is the only network operation in this pipeline.
 
-The current Android repository does not contain that bridge implementation or a packaged native inference runtime. Therefore this branch does not pretend to transcribe audio, diarize speakers, generate summaries, or extract tasks. A real transcription button must only be added after the bridge and its supported model runtime are integrated and tested on-device.
+Model downloads are substantial. The first transcription needs an internet connection and free storage. The downloaded models are retained in private app storage.
 
-## Not yet implemented
+## Important behavior
 
-- Whisper runtime and model download/verification.
-- Speaker diarization runtime and speaker-label editing.
-- Timestamped transcript segments and tap-to-seek playback.
-- Llama summary and task extraction.
-- Markdown rendering with speaker colors.
-- Audio playback and configurable decoding settings.
-- Encrypted database/files, account management, password changes and backup/restore.
-- Model download manager and progress reporting.
+- The app does not use Android's cloud SpeechRecognizer for transcription.
+- No speaker labels are guessed by alternating speaker numbers. Speaker identities come from acoustic segmentation, speaker embeddings, and clustering.
+- If ASR timestamps or diarization segments are missing, processing fails with an error instead of fabricating a transcript.
+- The original audio remains local. The transcript defaults to the uncleaned Whisper output; no automatic removal of fillers or repetitions is applied.
+- A transcript row's time range comes from the diarization interval; recognized tokens are assigned using Whisper token timestamps.
 
-## Storage
+## Current limitations / validation still required
 
-- SQLite database: app-private `audio_vault.db` stores recording metadata and transcript text.
-- File storage: app-private `files/recordings/` stores source audio.
-- The current SQLite database is not encrypted. App-private storage and disabled Android backup reduce exposure but are not a substitute for at-rest encryption.
+- A successful Gradle build is required before the APK can be considered buildable; GitHub Actions is running the first build check.
+- The pipeline still requires validation against real Russian multi-speaker recordings on physical Android devices, especially overlapping speech, short turns, background noise, and long recordings.
+- The current transcript editor stores the rendered speaker/timecode text. A structured segment table with independently editable speaker IDs and exact sub-second timestamps is a follow-up persistence migration.
+- Current playback navigation jumps to the start of a speaker turn; it does not yet stop automatically at that turn's end.
+- The first implementation processes the decoded audio in memory. Very long recordings may exceed device memory; chunked ASR/diarization is a later optimization.
+- Llama summary and task extraction, model settings UI, encrypted database/files, user accounts and backup/restore are not part of this transcription milestone.
 
-## Build notes
+## Build
 
-- Java source/target compatibility: Java 17.
-- Existing project namespace and application ID are retained.
-- Android minimum SDK remains 24.
-- Recording requires microphone permission. On Android 13+, notification permission may be requested by the platform for foreground-service notification visibility.
+- Java 17.
+- Android minSdk 24, compileSdk 36.
+- The Sherpa AAR is fetched by the Gradle task and verified before the app is compiled.
