@@ -91,7 +91,20 @@ public class RecordingService extends Service {
         }
     }
 
-    private void pauseRecording() {\n        if (recorder == null || paused || Build.VERSION.SDK_INT < 24) return;\n        try { recorder.pause(); paused = true; meterHandler.removeCallbacks(meterTask); }\n        catch (RuntimeException e) { sendBroadcast(new Intent(ACTION_FAILED).putExtra("error", "Не удалось приостановить запись: " + e.getMessage())); }\n    }\n\n    private void resumeRecording() {\n        if (recorder == null || !paused || Build.VERSION.SDK_INT < 24) return;\n        try { recorder.resume(); paused = false; meterHandler.post(meterTask); }\n        catch (RuntimeException e) { sendBroadcast(new Intent(ACTION_FAILED).putExtra("error", "Не удалось продолжить запись: " + e.getMessage())); }\n    }\n\n    private void stopRecording() {\n        meterHandler.removeCallbacks(meterTask);
+    private void pauseRecording() {
+        if (recorder == null || paused || Build.VERSION.SDK_INT < 24) return;
+        try { recorder.pause(); paused = true; meterHandler.removeCallbacks(meterTask); }
+        catch (RuntimeException e) { sendBroadcast(new Intent(ACTION_FAILED).putExtra("error", "Не удалось приостановить запись: " + e.getMessage())); }
+    }
+
+    private void resumeRecording() {
+        if (recorder == null || !paused || Build.VERSION.SDK_INT < 24) return;
+        try { recorder.resume(); paused = false; meterHandler.post(meterTask); }
+        catch (RuntimeException e) { sendBroadcast(new Intent(ACTION_FAILED).putExtra("error", "Не удалось продолжить запись: " + e.getMessage())); }
+    }
+
+    private void stopRecording() {
+        meterHandler.removeCallbacks(meterTask);
         if (recorder == null) {
             stopSelf();
             return;
@@ -116,7 +129,8 @@ public class RecordingService extends Service {
         stopSelf();
     }
 
-    private void releaseRecorder() {\n        meterHandler.removeCallbacks(meterTask);
+    private void releaseRecorder() {
+        meterHandler.removeCallbacks(meterTask);
         if (recorder != null) {
             try { recorder.reset(); } catch (Exception ignored) {}
             try { recorder.release(); } catch (Exception ignored) {}
