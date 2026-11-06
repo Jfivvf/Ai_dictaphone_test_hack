@@ -58,6 +58,7 @@ final class LocalTranscriptionEngine {
                     .setEnableTokenTimestamps(true)
                     .setEnableSegmentTimestamps(true)
                     .build();
+
             OfflineModelConfig model = OfflineModelConfig.builder()
                     .setWhisper(whisper)
                     .setTokens(tokens.getAbsolutePath())
@@ -65,6 +66,7 @@ final class LocalTranscriptionEngine {
                     .setDebug(false)
                     .setProvider("cpu")
                     .build();
+
             OfflineRecognizerConfig asrConfig = OfflineRecognizerConfig.builder()
                     .setOfflineModelConfig(model)
                     .setDecodingMethod("greedy_search")
@@ -79,22 +81,35 @@ final class LocalTranscriptionEngine {
             OfflineSpeakerSegmentationPyannoteModelConfig pyannote =
                     OfflineSpeakerSegmentationPyannoteModelConfig.builder()
                             .setModel(segmentation.getAbsolutePath())
-                            .setWindowShiftRatio(0.1f).build();
+                            .setWindowShiftRatio(0.1f)
+                            .build();
             OfflineSpeakerSegmentationModelConfig segmentationConfig =
                     OfflineSpeakerSegmentationModelConfig.builder()
-                            .setPyannote(pyannote).setNumThreads(Math.max(1, threads))
-                            .setProvider("cpu").setDebug(false).build();
-            SpeakerEmbeddingExtractorConfig embeddingConfig =
-                    SpeakerEmbeddingExtractorConfig.builder()
-                            .setModel(embedding.getAbsolutePath()).setNumThreads(Math.max(1, threads))
-                            .setProvider("cpu").setDebug(false).build();
-            OfflineSpeakerDiarizationConfig diarizationConfig =
-                    OfflineSpeakerDiarizationConfig.builder()
-                            .setSegmentation(segmentationConfig)
-                            .setEmbedding(embeddingConfig)
-                            .setClustering(FastClusteringConfig.builder()
-                                    .setNumClusters(-1).setThreshold(0.5f).setComputeConfidence(true).build())
-                            .setMinDurationOn(0.2f).setMinDurationOff(0.5f).build();
+                            .setPyannote(pyannote)
+                            .setNumThreads(Math.max(1, threads))
+                            .setProvider("cpu")
+                            .setDebug(false)
+                            .build();
+
+            SpeakerEmbeddingExtractorConfig embeddingConfig = SpeakerEmbeddingExtractorConfig.builder()
+                    .setModel(embedding.getAbsolutePath())
+                    .setNumThreads(Math.max(1, threads))
+                    .setProvider("cpu")
+                    .setDebug(false)
+                    .build();
+
+            FastClusteringConfig clustering = FastClusteringConfig.builder()
+                    .setNumClusters(-1)
+                    .setThreshold(0.5f)
+                    .setComputeConfidence(true)
+                    .build();
+            OfflineSpeakerDiarizationConfig diarizationConfig = OfflineSpeakerDiarizationConfig.builder()
+                    .setSegmentation(segmentationConfig)
+                    .setEmbedding(embeddingConfig)
+                    .setClustering(clustering)
+                    .setMinDurationOn(0.2f)
+                    .setMinDurationOff(0.5f)
+                    .build();
             diarizer = new OfflineSpeakerDiarization(diarizationConfig);
             if (diarizer.getSampleRate() != audio.sampleRate) {
                 throw new IllegalStateException("Модель диаризации требует " + diarizer.getSampleRate()

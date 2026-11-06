@@ -3,6 +3,8 @@ name: Android Java build
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [refactor/java-only-android]
 
 concurrency:
   group: android-java-${{ github.ref }}
