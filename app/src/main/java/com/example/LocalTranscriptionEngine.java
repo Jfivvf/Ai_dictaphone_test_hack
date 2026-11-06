@@ -38,9 +38,11 @@ final class LocalTranscriptionEngine {
     static final class Result {
         final String transcript;
         final List<Segment> segments;
-        Result(String transcript, List<Segment> segments) {
+        final String diarizationError;
+        Result(String transcript, List<Segment> segments, String diarizationError) {
             this.transcript = transcript;
             this.segments = segments;
+            this.diarizationError = diarizationError;
         }
     }
 
@@ -77,43 +79,50 @@ final class LocalTranscriptionEngine {
             OfflineRecognizerResult asr = recognizer.getResult(stream);
             String transcript = asr.getText() == null ? "" : asr.getText().trim();
 
-            OfflineSpeakerSegmentationPyannoteModelConfig pyannote =
-                    new OfflineSpeakerSegmentationPyannoteModelConfig();
-            pyannote.setModel(segmentation.getAbsolutePath());
-            pyannote.setWindowShiftRatio(0.1f);
-            OfflineSpeakerSegmentationModelConfig segmentationConfig =
-                    new OfflineSpeakerSegmentationModelConfig();
-            segmentationConfig.setPyannote(pyannote);
-            segmentationConfig.setNumThreads(Math.max(1, threads));
-            segmentationConfig.setProvider("cpu");
-            segmentationConfig.setDebug(false);
+            try {
+                OfflineSpeakerSegmentationPyannoteModelConfig pyannote =
+                        new OfflineSpeakerSegmentationPyannoteModelConfig();
+                pyannote.setModel(segmentation.getAbsolutePath());
+                pyannote.setWindowShiftRatio(0.1f);
+                OfflineSpeakerSegmentationModelConfig segmentationConfig =
+                        new OfflineSpeakerSegmentationModelConfig();
+                segmentationConfig.setPyannote(pyannote);
+                segmentationConfig.setNumThreads(Math.max(1, threads));
+                segmentationConfig.setProvider("cpu");
+                segmentationConfig.setDebug(false);
 
-            // model is a val in the Kotlin data class, so it is set in its constructor.
-            SpeakerEmbeddingExtractorConfig embeddingConfig =
-                    new SpeakerEmbeddingExtractorConfig(embedding.getAbsolutePath(),
-                            Math.max(1, threads), false, "cpu");
+                SpeakerEmbeddingExtractorConfig embeddingConfig =
+                        new SpeakerEmbeddingExtractorConfig(embedding.getAbsolutePath(),
+                                Math.max(1, threads), false, "cpu");
 
-            FastClusteringConfig clustering = new FastClusteringConfig();
-            clustering.setNumClusters(-1);
-            clustering.setThreshold(0.5f);
-            clustering.setComputeConfidence(true);
-            OfflineSpeakerDiarizationConfig diarizationConfig = new OfflineSpeakerDiarizationConfig();
-            diarizationConfig.setSegmentation(segmentationConfig);
-            diarizationConfig.setEmbedding(embeddingConfig);
-            diarizationConfig.setClustering(clustering);
-            diarizationConfig.setMinDurationOn(0.2f);
-            diarizationConfig.setMinDurationOff(0.5f);
-            diarizer = new OfflineSpeakerDiarization(null, diarizationConfig);
-            int diarizationSampleRate = diarizer.sampleRate();
-            if (diarizationSampleRate != audio.sampleRate) {
-                throw new IllegalStateException("Модель диаризации требует " + diarizationSampleRate
-                        + " Гц, декодировано " + audio.sampleRate + " Гц");
+                FastClusteringConfig clustering = new FastClusteringConfig();
+                clustering.setNumClusters(-1);
+                clustering.setThreshold(0.5f);
+                clustering.setComputeConfidence(true);
+                OfflineSpeakerDiarizationConfig diarizationConfig = new OfflineSpeakerDiarizationConfig();
+                diarizationConfig.setSegmentation(segmentationConfig);
+                diarizationConfig.setEmbedding(embeddingConfig);
+                diarizationConfig.setClustering(clustering);
+                diarizationConfig.setMinDurationOn(0.2f);
+                diarizationConfig.setMinDurationOff(0.5f);
+                diarizer = new OfflineSpeakerDiarization(null, diarizationConfig);
+                int diarizationSampleRate = diarizer.sampleRate();
+                if (diarizationSampleRate != audio.sampleRate) {
+                    throw new IllegalStateException("Модель диаризации требует " + diarizationSampleRate
+                            + " Гц, декодировано " + audio.sampleRate + " Гц");
+                }
+                OfflineSpeakerDiarizationSegment[] speakerSegments = diarizer.process(audio.samples);
+                float[] times = asr.getTimestamps();
+                String[] wordTokens = asr.getTokens();
+                List<Segment> result = alignWords(speakerSegments, times, wordTokens, transcript);
+                return new Result(transcript, result, null);
+            } catch (Exception diarizationException) {
+                String message = diarizationException.getMessage();
+                if (message == null || message.trim().isEmpty()) {
+                    message = diarizationException.getClass().getSimpleName();
+                }
+                return new Result(transcript, new ArrayList<>(), message);
             }
-            OfflineSpeakerDiarizationSegment[] speakerSegments = diarizer.process(audio.samples);
-            float[] times = asr.getTimestamps();
-            String[] wordTokens = asr.getTokens();
-            List<Segment> result = alignWords(speakerSegments, times, wordTokens, transcript);
-            return new Result(transcript, result);
         } finally {
             if (diarizer != null) diarizer.release();
             if (stream != null) stream.release();

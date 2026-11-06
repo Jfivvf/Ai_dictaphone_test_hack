@@ -43,6 +43,7 @@ final class ModelRepository {
                 if (!enc.isFile() || !dec.isFile() || !tok.isFile()) {
                     File archive = new File(root, "whisper.tar.bz2");
                     download(WHISPER, archive, "Загрузка Whisper", 639387718L, callback);
+                    main.post(() -> callback.progress("Распаковка модели Whisper", -1));
                     extractFlat(archive, whisperDir, "small-encoder.int8.onnx", "small-decoder.int8.onnx", "small-tokens.txt");
                     archive.delete();
                 }
@@ -53,6 +54,7 @@ final class ModelRepository {
                 if (!seg.isFile()) {
                     File archive = new File(root, "segmentation.tar.bz2");
                     download(SEGMENT, archive, "Загрузка сегментации речи", 6958444L, callback);
+                    main.post(() -> callback.progress("Распаковка модели сегментации", -1));
                     extractFlat(archive, diarDir, "model.onnx");
                     archive.delete();
                     File model = new File(diarDir, "model.onnx");
@@ -73,6 +75,7 @@ final class ModelRepository {
     private void download(String url, File target, String label, long expectedBytes, Callback callback) throws Exception {
         if (target.isFile() && target.length() > 0) return;
         File part = new File(target.getParentFile(), target.getName() + ".part");
+        main.post(() -> callback.progress(label + " · подключение", -1));
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(20000);
         c.setReadTimeout(120000);
@@ -86,11 +89,13 @@ final class ModelRepository {
             while ((n = in.read(b)) >= 0) {
                 out.write(b, 0, n);
                 done += n;
-                int p = total > 0 ? (int)(done * 100 / total) : -1;
+                long progressTotal = total > 0 ? total : expectedBytes;
+                int p = progressTotal > 0 ? (int)Math.min(100, done * 100 / progressTotal) : -1;
                 if (p != previous) {
                     previous = p;
                     final int progress = p;
-                    main.post(() -> callback.progress(label, progress));
+                    String progressLabel = label + " · " + formatSize(done) + (progressTotal > 0 ? " / " + formatSize(progressTotal) : "");
+                    main.post(() -> callback.progress(progressLabel, progress));
                 }
             }
         } finally {
@@ -102,6 +107,10 @@ final class ModelRepository {
             throw new IOException("Размер модели не совпадает с ожидаемым: " + actual + " из " + expectedBytes + " байт");
         }
         if (!part.renameTo(target)) throw new IOException("Не удалось сохранить скачанную модель");
+    }
+
+    private String formatSize(long bytes) {
+        return String.format(java.util.Locale.ROOT, "%.0f MB", bytes / (1024.0 * 1024.0));
     }
 
     private void extractFlat(File archive, File destination, String... keepNames) throws Exception {

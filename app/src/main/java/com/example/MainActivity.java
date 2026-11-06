@@ -21,6 +21,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -58,6 +59,33 @@ public class MainActivity extends ComponentActivity {
     private ExecutorService transcriptionExecutor;
     private Handler ui = new Handler(Looper.getMainLooper());
     private Button transcribeButton;
+    private Button recordButton;
+    private Button pauseButton;
+    private TextView levelText;
+    private ProgressBar levelBar;
+    private TextView elapsedText;
+    private long recordingStartedAt;
+    private long pausedAt;
+    private long pausedTotalMs;
+    private boolean recordingPaused = false;
+    private long processingStartedAt;
+    private final Runnable recordingTicker = new Runnable() {
+        @Override public void run() {
+            if (!recording || elapsedText == null) return;
+            long end = recordingPaused ? pausedAt : System.currentTimeMillis();
+            long elapsed = Math.max(0, end - recordingStartedAt - pausedTotalMs) / 1000;
+            elapsedText.setText(String.format(Locale.ROOT, "%02d:%02d", elapsed / 60, elapsed % 60));
+            ui.postDelayed(this, 1000);
+        }
+    };
+    private final Runnable processingTicker = new Runnable() {
+        @Override public void run() {
+            if (processingStartedAt == 0) return;
+            long elapsed = (System.currentTimeMillis() - processingStartedAt) / 1000;
+            setStatus("Локальное распознавание и диаризация · " + elapsed + " с");
+            ui.postDelayed(this, 1000);
+        }
+    };
 
     private final ActivityResultLauncher<String[]> importAudio =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::importSelectedAudio);
@@ -76,10 +104,20 @@ public class MainActivity extends ComponentActivity {
                     refreshLibrary();
                 }
                 recording = false;
+                recordingPaused = false;
+                pausedTotalMs = 0;
+                ui.removeCallbacks(recordingTicker);
                 updateRecordButton();
+                if (pauseButton != null) { pauseButton.setEnabled(false); pauseButton.setText("Пауза"); }
+                if (elapsedText != null) elapsedText.setText("00:00");
+            } else if (RecordingService.ACTION_LEVEL.equals(action)) {
+                updateLevel(intent.getDoubleExtra(RecordingService.EXTRA_DB, -60.0));
             } else if (RecordingService.ACTION_FAILED.equals(action)) {
                 recording = false;
+                recordingPaused = false;
+                ui.removeCallbacks(recordingTicker);
                 updateRecordButton();
+                if (pauseButton != null) { pauseButton.setEnabled(false); pauseButton.setText("Пауза"); }
                 setStatus(intent.getStringExtra("error"));
             }
         }
@@ -96,33 +134,65 @@ public class MainActivity extends ComponentActivity {
         IntentFilter filter = new IntentFilter();
         filter.addAction(RecordingService.ACTION_FINISHED);
         filter.addAction(RecordingService.ACTION_FAILED);
+        filter.addAction(RecordingService.ACTION_LEVEL);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(recordingReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         else registerReceiver(recordingReceiver, filter);
     }
 
     private void buildInterface() {
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(24), dp(20), dp(24));
+        root.setPadding(dp(20), dp(24), dp(20), dp(28));
+        root.setBackgroundColor(0xFF0B0D12);
         scroll.addView(root);
         setContentView(scroll);
 
         TextView heading = new TextView(this);
         heading.setText("AudioVault");
         heading.setTextSize(28);
+        heading.setTextColor(0xFFF5F5FA);
         heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         root.addView(heading);
 
         statusText = new TextView(this);
         statusText.setText("Готово");
         statusText.setTextSize(13);
+        statusText.setTextColor(0xFFB6BBC9);
         statusText.setPadding(0, dp(6), 0, dp(16));
         root.addView(statusText);
 
-        Button recordButton = button("Начать запись");
+        TextView levelLabel = new TextView(this);
+        levelLabel.setText("УРОВЕНЬ МИКРОФОНА");
+        levelLabel.setTextColor(0xFF9B8CFF);
+        levelLabel.setTextSize(11);
+        root.addView(levelLabel);
+        levelText = new TextView(this);
+        levelText.setText("−60 dBFS");
+        levelText.setTextColor(0xFFE4E1FF);
+        levelText.setTextSize(14);
+        root.addView(levelText);
+        levelBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        levelBar.setMax(60);
+        levelBar.setProgress(0);
+        root.addView(levelBar, new LinearLayout.LayoutParams(-1, dp(12)));
+        elapsedText = new TextView(this);
+        elapsedText.setText("00:00");
+        elapsedText.setTextColor(0xFFFFFFFF);
+        elapsedText.setTextSize(24);
+        elapsedText.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        root.addView(elapsedText);
+
+        recordButton = button("Начать запись");
         recordButton.setOnClickListener(v -> toggleRecording());
+        recordButton.setBackgroundColor(0xFFE32662);
+        recordButton.setTextColor(0xFFFFFFFF);
         root.addView(recordButton);
+        pauseButton = button("Пауза");
+        pauseButton.setEnabled(false);
+        pauseButton.setOnClickListener(v -> togglePauseRecording());
+        root.addView(pauseButton);
         Button importButton = button("Импортировать аудио");
         importButton.setOnClickListener(v -> importAudio.launch(new String[]{"audio/*"}));
         root.addView(importButton);
@@ -137,6 +207,9 @@ public class MainActivity extends ComponentActivity {
         root.addView(selectedTitle);
         transcriptEditor = new EditText(this);
         transcriptEditor.setMinLines(8);
+        transcriptEditor.setTextColor(0xFFE9EAF1);
+        transcriptEditor.setHintTextColor(0xFF777E8D);
+        transcriptEditor.setBackgroundColor(0xFF171B24);
         transcriptEditor.setGravity(Gravity.TOP | Gravity.START);
         transcriptEditor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
@@ -188,7 +261,12 @@ public class MainActivity extends ComponentActivity {
                 transcriptionExecutor.execute(() -> {
                     try {
                         AudioDecoder.AudioData data = AudioDecoder.decode(MainActivity.this, audioPath);
-                        ui.post(() -> setStatus("Распознавание речи и диаризация…"));
+                        processingStartedAt = System.currentTimeMillis();
+                        ui.post(() -> {
+                            setStatus("Распознавание речи и диаризация…");
+                            ui.removeCallbacks(processingTicker);
+                            ui.post(processingTicker);
+                        });
                         LocalTranscriptionEngine.Result result = LocalTranscriptionEngine.process(
                                 data, encoder, decoder, tokens, segmentation, embedding, "ru",
                                 Math.max(2, Runtime.getRuntime().availableProcessors() - 1));
@@ -206,8 +284,11 @@ public class MainActivity extends ComponentActivity {
                         }
                         String transcript = formatted.length() == 0 ? result.transcript : formatted.toString().trim();
                         ui.post(() -> {
+                            ui.removeCallbacks(processingTicker);
+                            long processingSeconds = (System.currentTimeMillis() - processingStartedAt) / 1000;
+                            processingStartedAt = 0;
                             database.updateTranscript(recordingId, transcript);
-                            database.updateStatus(recordingId, "Готово");
+                            database.updateStatus(recordingId, result.diarizationError == null ? "Готово" : "Расшифровка готова · нет диаризации");
                             refreshLibrary();
                             if (selected != null && selected.id == recordingId) {
                                 selected = new RecordingDb.Recording(selected.id, selected.title,
@@ -215,11 +296,15 @@ public class MainActivity extends ComponentActivity {
                                 transcriptEditor.setText(transcript);
                                 renderTranscriptSegments(transcript);
                             }
-                            setStatus("Готово · локальная транскрипция и диаризация завершены");
+                            setStatus(result.diarizationError == null
+                                    ? "Расшифровка и диаризация готовы · " + processingSeconds + " с"
+                                    : "Исходная расшифровка сохранена; диаризация не завершилась: " + result.diarizationError);
                             transcribeButton.setEnabled(true);
                         });
                     } catch (Exception e) {
                         ui.post(() -> {
+                            ui.removeCallbacks(processingTicker);
+                            processingStartedAt = 0;
                             database.updateStatus(recordingId, "Ошибка");
                             refreshLibrary();
                             setStatus("Ошибка обработки: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
@@ -238,6 +323,31 @@ public class MainActivity extends ComponentActivity {
         });
     }
 
+    private void updateLevel(double db) {
+        if (levelText == null || levelBar == null) return;
+        double bounded = Math.max(-60.0, Math.min(0.0, db));
+        levelText.setText(String.format(Locale.getDefault(), "%.0f dBFS", bounded));
+        levelBar.setProgress((int) Math.round(bounded + 60.0));
+    }
+
+    private void togglePauseRecording() {
+        if (!recording) return;
+        if (!recordingPaused) {
+            startService(new Intent(this, RecordingService.class).setAction(RecordingService.ACTION_PAUSE));
+            recordingPaused = true;
+            pausedAt = System.currentTimeMillis();
+            pauseButton.setText("Продолжить");
+            setStatus("Запись приостановлена");
+            updateLevel(-60);
+        } else {
+            startService(new Intent(this, RecordingService.class).setAction(RecordingService.ACTION_RESUME));
+            pausedTotalMs += System.currentTimeMillis() - pausedAt;
+            recordingPaused = false;
+            pauseButton.setText("Пауза");
+            setStatus("Запись продолжается");
+        }
+    }
+
     private void toggleRecording() {
         if (!recording) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
@@ -246,6 +356,11 @@ public class MainActivity extends ComponentActivity {
                 return;
             }
             recording = true;
+            recordingPaused = false;
+            recordingStartedAt = System.currentTimeMillis();
+            pausedTotalMs = 0;
+            ui.removeCallbacks(recordingTicker);
+            ui.post(recordingTicker);
             updateRecordButton();
             Intent service = new Intent(this, RecordingService.class).setAction(RecordingService.ACTION_START);
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
@@ -258,10 +373,8 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void updateRecordButton() {
-        // The control label is updated by rebuilding only the first action button.
-        if (root.getChildCount() > 2 && root.getChildAt(2) instanceof Button) {
-            ((Button) root.getChildAt(2)).setText(recording ? "Остановить запись" : "Начать запись");
-        }
+        if (recordButton != null) recordButton.setText(recording ? "Остановить и сохранить" : "Начать запись");
+        if (pauseButton != null) pauseButton.setEnabled(recording && Build.VERSION.SDK_INT >= 24);
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
@@ -445,6 +558,7 @@ public class MainActivity extends ComponentActivity {
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
+        button.setTextSize(14);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(48));
         params.bottomMargin = dp(8);
         button.setLayoutParams(params);
@@ -474,6 +588,8 @@ public class MainActivity extends ComponentActivity {
 
     @Override protected void onDestroy() {
         try { unregisterReceiver(recordingReceiver); } catch (Exception ignored) {}
+        ui.removeCallbacks(recordingTicker);
+        ui.removeCallbacks(processingTicker);
         if (modelRepository != null) modelRepository.close();
         if (transcriptionExecutor != null) transcriptionExecutor.shutdownNow();
         if (audioPlayer != null) {
