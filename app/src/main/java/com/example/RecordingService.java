@@ -56,6 +56,14 @@ public class RecordingService extends Service {
             stopRecording();
             return START_NOT_STICKY;
         }
+        if (ACTION_PAUSE.equals(action)) {
+            pauseRecording();
+            return START_NOT_STICKY;
+        }
+        if (ACTION_RESUME.equals(action)) {
+            resumeRecording();
+            return START_NOT_STICKY;
+        }
         if (recorder == null) startRecording();
         return START_NOT_STICKY;
     }
@@ -71,7 +79,7 @@ public class RecordingService extends Service {
             if (Build.VERSION.SDK_INT >= 31) recorder = new MediaRecorder(this);
             else recorder = new MediaRecorder();
 
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION);
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
             recorder.setAudioEncodingBitRate(128000);
