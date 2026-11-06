@@ -1,0 +1,8 @@
+{
+  "name": "AI Dictaphone",
+  "description": "Smart AI voice recorder with transcription, summarization, and meeting notes",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
