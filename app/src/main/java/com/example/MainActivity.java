@@ -172,6 +172,8 @@ public class MainActivity extends ComponentActivity {
             return;
         }
         transcribeButton.setEnabled(false);
+        database.updateStatus(recordingToProcess.id, "Подготовка моделей");
+        refreshLibrary();
         setStatus("Подготовка локальных моделей…");
         modelRepository.prepare(new ModelRepository.Callback() {
             @Override public void progress(String label, int percent) {
@@ -205,16 +207,21 @@ public class MainActivity extends ComponentActivity {
                         String transcript = formatted.length() == 0 ? result.transcript : formatted.toString().trim();
                         ui.post(() -> {
                             database.updateTranscript(recordingId, transcript);
+                            database.updateStatus(recordingId, "Готово");
+                            refreshLibrary();
                             if (selected != null && selected.id == recordingId) {
                                 selected = new RecordingDb.Recording(selected.id, selected.title,
                                         selected.audioPath, transcript, selected.createdAt, "Обработано");
                                 transcriptEditor.setText(transcript);
+                                renderTranscriptSegments(transcript);
                             }
                             setStatus("Готово · локальная транскрипция и диаризация завершены");
                             transcribeButton.setEnabled(true);
                         });
                     } catch (Exception e) {
                         ui.post(() -> {
+                            database.updateStatus(recordingId, "Ошибка");
+                            refreshLibrary();
                             setStatus("Ошибка обработки: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
                             transcribeButton.setEnabled(true);
                         });
@@ -223,6 +230,8 @@ public class MainActivity extends ComponentActivity {
             }
 
             @Override public void failed(Exception error) {
+                database.updateStatus(recordingToProcess.id, "Ошибка моделей");
+                refreshLibrary();
                 setStatus("Не удалось подготовить модели: " + error.getMessage());
                 transcribeButton.setEnabled(true);
             }
