@@ -11,6 +11,8 @@ import android.graphics.Typeface;
 import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -36,6 +38,8 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends ComponentActivity {
     private static final int REQUEST_AUDIO_PERMISSION = 701;
@@ -47,6 +51,10 @@ public class MainActivity extends ComponentActivity {
     private TextView statusText;
     private RecordingDb.Recording selected;
     private boolean recording = false;
+    private ModelRepository modelRepository;
+    private ExecutorService transcriptionExecutor;
+    private Handler ui = new Handler(Looper.getMainLooper());
+    private Button transcribeButton;
 
     private final ActivityResultLauncher<String[]> importAudio =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::importSelectedAudio);
@@ -77,6 +85,8 @@ public class MainActivity extends ComponentActivity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         database = new RecordingDb(this);
+        modelRepository = new ModelRepository(this);
+        transcriptionExecutor = Executors.newSingleThreadExecutor();
         buildInterface();
         refreshLibrary();
 
@@ -139,6 +149,77 @@ public class MainActivity extends ComponentActivity {
             exportPdf.launch(safeFileName(selected.title) + ".pdf");
         });
         root.addView(pdfButton);
+        transcribeButton = button("Расшифровать и определить говорящих");
+        transcribeButton.setOnClickListener(v -> transcribeSelected());
+        root.addView(transcribeButton);
+    }
+
+    private void transcribeSelected() {
+        if (selected == null) {
+            setStatus("Сначала выберите аудиозапись");
+            return;
+        }
+        File audio = new File(selected.audioPath);
+        if (!audio.isFile()) {
+            setStatus("Исходный аудиофайл не найден");
+            return;
+        }
+        transcribeButton.setEnabled(false);
+        setStatus("Подготовка локальных моделей…");
+        modelRepository.prepare(new ModelRepository.Callback() {
+            @Override public void progress(String label, int percent) {
+                setStatus(percent >= 0 ? label + " · " + percent + "%" : label);
+            }
+
+            @Override public void ready(File encoder, File decoder, File tokens,
+                                        File segmentation, File embedding) {
+                setStatus("Декодирование аудио…");
+                final String audioPath = selected.audioPath;
+                final long recordingId = selected.id;
+                transcriptionExecutor.execute(() -> {
+                    try {
+                        AudioDecoder.AudioData data = AudioDecoder.decode(MainActivity.this, audioPath);
+                        ui.post(() -> setStatus("Распознавание речи и диаризация…"));
+                        LocalTranscriptionEngine.Result result = LocalTranscriptionEngine.process(
+                                data, encoder, decoder, tokens, segmentation, embedding, "ru",
+                                Math.max(2, Runtime.getRuntime().availableProcessors() - 1));
+                        StringBuilder formatted = new StringBuilder();
+                        for (LocalTranscriptionEngine.Segment segment : result.segments) {
+                            formatted.append("[")
+                                    .append(LocalTranscriptionEngine.formatTime(segment.startMs))
+                                    .append(" – ")
+                                    .append(LocalTranscriptionEngine.formatTime(segment.endMs))
+                                    .append("] Спикер ")
+                                    .append(segment.speaker + 1)
+                                    .append(": ")
+                                    .append(segment.text)
+                                    .append("\n\n");
+                        }
+                        String transcript = formatted.length() == 0 ? result.transcript : formatted.toString().trim();
+                        ui.post(() -> {
+                            database.updateTranscript(recordingId, transcript);
+                            if (selected != null && selected.id == recordingId) {
+                                selected = new RecordingDb.Recording(selected.id, selected.title,
+                                        selected.audioPath, transcript, selected.createdAt, "Обработано");
+                                transcriptEditor.setText(transcript);
+                            }
+                            setStatus("Готово · локальная транскрипция и диаризация завершены");
+                            transcribeButton.setEnabled(true);
+                        });
+                    } catch (Exception e) {
+                        ui.post(() -> {
+                            setStatus("Ошибка обработки: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                            transcribeButton.setEnabled(true);
+                        });
+                    }
+                });
+            }
+
+            @Override public void failed(Exception error) {
+                setStatus("Не удалось подготовить модели: " + error.getMessage());
+                transcribeButton.setEnabled(true);
+            }
+        });
     }
 
     private void toggleRecording() {
@@ -309,6 +390,8 @@ public class MainActivity extends ComponentActivity {
 
     @Override protected void onDestroy() {
         try { unregisterReceiver(recordingReceiver); } catch (Exception ignored) {}
+        if (modelRepository != null) modelRepository.close();
+        if (transcriptionExecutor != null) transcriptionExecutor.shutdownNow();
         database.close();
         super.onDestroy();
     }
