@@ -42,7 +42,7 @@ final class ModelRepository {
                 File tok = new File(whisperDir, "small-tokens.txt");
                 if (!enc.isFile() || !dec.isFile() || !tok.isFile()) {
                     File archive = new File(root, "whisper.tar.bz2");
-                    download(WHISPER, archive, "Загрузка Whisper", callback);
+                    download(WHISPER, archive, "Загрузка Whisper", 639387718L, callback);
                     extractFlat(archive, whisperDir, "small-encoder.int8.onnx", "small-decoder.onnx", "small-tokens.txt");
                     archive.delete();
                 }
@@ -52,14 +52,14 @@ final class ModelRepository {
                 File seg = new File(diarDir, "segmentation.onnx");
                 if (!seg.isFile()) {
                     File archive = new File(root, "segmentation.tar.bz2");
-                    download(SEGMENT, archive, "Загрузка сегментации речи", callback);
+                    download(SEGMENT, archive, "Загрузка сегментации речи", 6958444L, callback);
                     extractFlat(archive, diarDir, "model.onnx");
                     archive.delete();
                     File model = new File(diarDir, "model.onnx");
                     if (model.isFile() && !model.renameTo(seg)) throw new IOException("Не удалось подготовить модель сегментации");
                 }
                 File emb = new File(diarDir, "embedding.onnx");
-                if (!emb.isFile()) download(EMBED, emb, "Загрузка модели голосов", callback);
+                if (!emb.isFile()) download(EMBED, emb, "Загрузка модели голосов", 39593761L, callback);
 
                 if (!enc.isFile() || !dec.isFile() || !tok.isFile() || !seg.isFile() || !emb.isFile())
                     throw new IOException("Загрузка моделей завершилась не полностью");
@@ -70,7 +70,7 @@ final class ModelRepository {
         });
     }
 
-    private void download(String url, File target, String label, Callback callback) throws Exception {
+    private void download(String url, File target, String label, long expectedBytes, Callback callback) throws Exception {
         if (target.isFile() && target.length() > 0) return;
         File part = new File(target.getParentFile(), target.getName() + ".part");
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
@@ -95,6 +95,11 @@ final class ModelRepository {
             }
         } finally {
             c.disconnect();
+        }
+        if (part.length() != expectedBytes) {
+            long actual = part.length();
+            part.delete();
+            throw new IOException("Размер модели не совпадает с ожидаемым: " + actual + " из " + expectedBytes + " байт");
         }
         if (!part.renameTo(target)) throw new IOException("Не удалось сохранить скачанную модель");
     }
