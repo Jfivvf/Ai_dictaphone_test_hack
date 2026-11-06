@@ -86,11 +86,13 @@ final class ModelRepository {
             while ((n = in.read(b)) >= 0) {
                 out.write(b, 0, n);
                 done += n;
-                long progressTotal = total > 0 ? total : expectedBytes;\n                int p = progressTotal > 0 ? (int)Math.min(100, done * 100 / progressTotal) : -1;
+                long progressTotal = total > 0 ? total : expectedBytes;
+                int p = progressTotal > 0 ? (int)Math.min(100, done * 100 / progressTotal) : -1;
                 if (p != previous) {
                     previous = p;
                     final int progress = p;
-                    String progressLabel = label + " · " + formatSize(done) + (progressTotal > 0 ? " / " + formatSize(progressTotal) : "");\n                    main.post(() -> callback.progress(progressLabel, progress));
+                    String progressLabel = label + " · " + formatSize(done) + (progressTotal > 0 ? " / " + formatSize(progressTotal) : "");
+                    main.post(() -> callback.progress(progressLabel, progress));
                 }
             }
         } finally {
