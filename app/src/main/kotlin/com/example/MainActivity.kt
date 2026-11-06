@@ -10,13 +10,22 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import com.example.ui.theme.AIDictaphoneTheme
 
+import com.example.ui.main.MainScreen
+
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
     enableEdgeToEdge()
     setContent {
-      AIDictaphoneTheme { Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { MainNavigation() } }
+      AIDictaphoneTheme {
+        Surface(
+          modifier = Modifier.fillMaxSize(),
+          color = MaterialTheme.colorScheme.background
+        ) {
+          MainScreen()
+        }
+      }
     }
   }
 }

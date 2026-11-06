@@ -10,7 +10,7 @@ data class LlamaConfig(
     val temperature: Float = 0.7f,
     val topK: Int = 20,
     val topP: Float = 0.8f,
-    val systemPrompt: String = "Ты — умный ассистент диктофона. Анализируй стенограмму, выделяй суть, задачи и формируй четкие структурированные выводы на русском языке."
+    val systemPrompt: String = "Ты — структурирующий ассистент. Анализируй стенограмму, составляй подробный связный конспект, формулируй определения, тезисы и ключевые задачи."
 )
 
 data class ActionItem(
@@ -18,11 +18,4 @@ data class ActionItem(
     val text: String,
     val isCompleted: Boolean = false,
     val assignee: String? = null
-)
-
-data class AiChatMessage(
-    val id: String,
-    val isUser: Boolean,
-    val text: String,
-    val timestamp: Long = System.currentTimeMillis()
 )

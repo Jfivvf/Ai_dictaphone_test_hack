@@ -18,6 +18,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.detail.RecordingDetailScreen
+import com.example.ui.profile.UserProfileSheet
+import com.example.ui.recording.AudioPreconfigSheet
 import com.example.ui.recording.LiveRecordingSheet
 import com.example.ui.recordings.RecordingsListScreen
 import com.example.ui.settings.ModelsSettingsDialog
@@ -35,11 +37,16 @@ fun MainScreen(
     val selectedRecording by viewModel.selectedRecording.collectAsStateWithLifecycle()
     val isRecordingSheetOpen by viewModel.isRecordingSheetOpen.collectAsStateWithLifecycle()
     val isSettingsDialogOpen by viewModel.isSettingsDialogOpen.collectAsStateWithLifecycle()
+    val isPreconfigSheetOpen by viewModel.isPreconfigSheetOpen.collectAsStateWithLifecycle()
+    val isProfileSheetOpen by viewModel.isProfileSheetOpen.collectAsStateWithLifecycle()
 
     val isRecording by viewModel.audioRecorder.isRecording.collectAsStateWithLifecycle()
     val isRecordingPaused by viewModel.audioRecorder.isPaused.collectAsStateWithLifecycle()
     val recordingDurationMs by viewModel.audioRecorder.recordingDurationMs.collectAsStateWithLifecycle()
     val recordingAmplitudes by viewModel.audioRecorder.amplitudes.collectAsStateWithLifecycle()
+    val liveRecognizedText by viewModel.liveRecognizedText.collectAsStateWithLifecycle()
+    val activeSpeaker by viewModel.activeSpeaker.collectAsStateWithLifecycle()
+    val liveSegments by viewModel.liveSegments.collectAsStateWithLifecycle()
 
     val isPlaying by viewModel.audioPlayer.isPlaying.collectAsStateWithLifecycle()
     val currentPositionMs by viewModel.audioPlayer.currentPositionMs.collectAsStateWithLifecycle()
@@ -49,6 +56,9 @@ fun MainScreen(
 
     val whisperConfig by viewModel.repository.whisperConfig.collectAsStateWithLifecycle()
     val llamaConfig by viewModel.repository.llamaConfig.collectAsStateWithLifecycle()
+    val audioPreconfig by viewModel.audioPreconfig.collectAsStateWithLifecycle()
+    val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
+    val modelsList by viewModel.modelsList.collectAsStateWithLifecycle()
     val isAiGenerating by viewModel.isAiGenerating.collectAsStateWithLifecycle()
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
@@ -99,12 +109,27 @@ fun MainScreen(
                     onReRunAi = {
                         viewModel.runAiProcessingPipeline(
                             activeRecording.id,
+                            activeRecording.segments,
+                            null,
                             activeRecording.filePath,
-                            activeRecording.durationMs
+                            activeRecording.durationMs,
+                            activeRecording.title
                         )
                     },
+                    onRenameSpeaker = { oldName, newName ->
+                        viewModel.renameSpeaker(activeRecording.id, oldName, newName)
+                    },
+                    onUpdateSegmentText = { segmentId, newText ->
+                        viewModel.updateSegmentText(activeRecording.id, segmentId, newText)
+                    },
+                    onUpdateNotes = { notes ->
+                        viewModel.updateNotes(activeRecording.id, notes)
+                    },
                     onToggleActionItem = { viewModel.toggleActionItem(activeRecording.id, it) },
-                    onSendMessage = { viewModel.sendChatMessage(activeRecording.id, it) },
+                    onAddTag = { tag -> viewModel.addTag(activeRecording.id, tag) },
+                    onRemoveTag = { tag -> viewModel.removeTag(activeRecording.id, tag) },
+                    onReDiarize = { count -> viewModel.reDiarize(activeRecording.id, count) },
+                    onToggleSegmentSpeaker = { segmentId -> viewModel.toggleSegmentSpeaker(activeRecording.id, segmentId) },
                     onBack = { viewModel.selectRecording(null) }
                 )
             } else {
@@ -114,8 +139,6 @@ fun MainScreen(
                     selectedTag = selectedTag,
                     currentPlayingId = currentPlayingId,
                     isPlaying = isPlaying,
-                    whisperModelName = whisperConfig.modelPath,
-                    llamaModelName = llamaConfig.modelPath,
                     onSearchChange = { viewModel.onSearchQueryChange(it) },
                     onTagSelect = { viewModel.onTagSelect(it) },
                     onRecordingClick = { viewModel.selectRecording(it.id) },
@@ -127,6 +150,9 @@ fun MainScreen(
                         }
                     },
                     onToggleFavorite = { viewModel.toggleFavorite(it) },
+                    onImportAudio = { uri -> viewModel.importAudioFile(uri, context) },
+                    onOpenPreconfig = { viewModel.openPreconfigSheet() },
+                    onOpenProfile = { viewModel.openProfileSheet() },
                     onOpenRecordSheet = { handleRecordClick() },
                     onOpenSettings = { viewModel.openSettingsDialog() }
                 )
@@ -140,12 +166,41 @@ fun MainScreen(
                 isPaused = isRecordingPaused,
                 durationMs = recordingDurationMs,
                 amplitudes = recordingAmplitudes,
+                liveText = liveRecognizedText,
+                activeSpeaker = activeSpeaker,
+                liveSegments = liveSegments,
+                onSwitchSpeaker = { viewModel.switchRecordingSpeaker() },
                 onStart = { viewModel.startRecording() },
                 onPause = { viewModel.pauseRecording() },
                 onResume = { viewModel.resumeRecording() },
-                onFinish = { customTitle -> viewModel.finishRecording(customTitle) },
+                onFinish = { customTitle, customText, customTag ->
+                    viewModel.finishRecording(customTitle, customText, customTag)
+                },
                 onCancel = { viewModel.closeRecordingSheet() },
                 onDismiss = { viewModel.closeRecordingSheet() }
+            )
+        }
+
+        // Audio preconfig bottom sheet
+        if (isPreconfigSheetOpen) {
+            AudioPreconfigSheet(
+                currentConfig = audioPreconfig,
+                onSaveAndRecord = { updated ->
+                    viewModel.updateAudioPreconfig(updated)
+                    viewModel.closePreconfigSheet()
+                    handleRecordClick()
+                },
+                onDismiss = { viewModel.closePreconfigSheet() }
+            )
+        }
+
+        // User profile sheet
+        if (isProfileSheetOpen) {
+            UserProfileSheet(
+                profile = userProfile,
+                models = modelsList,
+                onDownloadModel = { viewModel.downloadModel(it) },
+                onDismiss = { viewModel.closeProfileSheet() }
             )
         }
 

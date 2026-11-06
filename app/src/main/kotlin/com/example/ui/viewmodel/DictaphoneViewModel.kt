@@ -1,16 +1,22 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.engine.AudioPlayerManager
 import com.example.data.engine.AudioRecorderManager
 import com.example.data.engine.LlamaEngine
+import com.example.data.engine.PdfExporter
+import com.example.data.engine.SpeechRecognizerManager
 import com.example.data.engine.WhisperEngine
-import com.example.data.model.AiChatMessage
+import com.example.data.model.AudioPreconfig
 import com.example.data.model.LlamaConfig
+import com.example.data.model.OnDeviceModel
 import com.example.data.model.ProcessingStatus
 import com.example.data.model.Recording
+import com.example.data.model.UserProfile
 import com.example.data.model.WhisperConfig
 import com.example.data.repository.DictaphoneRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,13 +27,15 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 
-class DictaphoneViewModel(
+class DictaphoneViewModel @JvmOverloads constructor(
     application: Application,
     val repository: DictaphoneRepository = DictaphoneRepository(application),
     val audioRecorder: AudioRecorderManager = AudioRecorderManager(application),
     val audioPlayer: AudioPlayerManager = AudioPlayerManager(application),
+    val speechRecognizer: SpeechRecognizerManager = SpeechRecognizerManager(application),
     val whisperEngine: WhisperEngine = WhisperEngine(),
     val llamaEngine: LlamaEngine = LlamaEngine()
 ) : AndroidViewModel(application) {
@@ -47,8 +55,21 @@ class DictaphoneViewModel(
     private val _isSettingsDialogOpen = MutableStateFlow(false)
     val isSettingsDialogOpen: StateFlow<Boolean> = _isSettingsDialogOpen.asStateFlow()
 
+    private val _isPreconfigSheetOpen = MutableStateFlow(false)
+    val isPreconfigSheetOpen: StateFlow<Boolean> = _isPreconfigSheetOpen.asStateFlow()
+
+    private val _isProfileSheetOpen = MutableStateFlow(false)
+    val isProfileSheetOpen: StateFlow<Boolean> = _isProfileSheetOpen.asStateFlow()
+
     private val _isAiGenerating = MutableStateFlow(false)
     val isAiGenerating: StateFlow<Boolean> = _isAiGenerating.asStateFlow()
+
+    val liveRecognizedText: StateFlow<String> = speechRecognizer.livePartialText
+    val activeSpeaker: StateFlow<String> = speechRecognizer.activeSpeaker
+    val liveSegments: StateFlow<List<com.example.data.model.TranscriptSegment>> = speechRecognizer.collectedSegments
+    val audioPreconfig: StateFlow<AudioPreconfig> = repository.audioPreconfig
+    val userProfile: StateFlow<UserProfile> = repository.userProfile
+    val modelsList: StateFlow<List<OnDeviceModel>> = repository.modelsList
 
     init {
         whisperEngine.initialize()
@@ -65,7 +86,8 @@ class DictaphoneViewModel(
             val matchesQuery = query.isBlank() ||
                 rec.title.contains(query, ignoreCase = true) ||
                 rec.fullTranscript.contains(query, ignoreCase = true) ||
-                rec.tags.any { it.contains(query, ignoreCase = true) }
+                rec.tags.any { it.contains(query, ignoreCase = true) } ||
+                rec.speakersList.any { it.contains(query, ignoreCase = true) }
 
             val matchesTag = tag == null || tag == "Все" || rec.tags.contains(tag)
             matchesQuery && matchesTag
@@ -91,6 +113,22 @@ class DictaphoneViewModel(
         _selectedRecordingId.value = id
     }
 
+    fun openPreconfigSheet() {
+        _isPreconfigSheetOpen.value = true
+    }
+
+    fun closePreconfigSheet() {
+        _isPreconfigSheetOpen.value = false
+    }
+
+    fun openProfileSheet() {
+        _isProfileSheetOpen.value = true
+    }
+
+    fun closeProfileSheet() {
+        _isProfileSheetOpen.value = false
+    }
+
     fun openRecordingSheet() {
         _isRecordingSheetOpen.value = true
     }
@@ -114,6 +152,9 @@ class DictaphoneViewModel(
     fun startRecording() {
         audioPlayer.stop()
         audioRecorder.startRecording()
+        // Start real-time microphone speech recognition
+        val lang = if (repository.whisperConfig.value.language == "en") "en-US" else "ru-RU"
+        speechRecognizer.startListening(lang)
     }
 
     fun pauseRecording() {
@@ -125,11 +166,13 @@ class DictaphoneViewModel(
     }
 
     fun cancelRecording() {
+        speechRecognizer.stopListening()
         val (file, _) = audioRecorder.stopRecording()
         file?.delete()
     }
 
-    fun finishRecording(customTitle: String? = null) {
+    fun finishRecording(customTitle: String? = null, customText: String? = null, customTag: String? = null) {
+        val capturedSegments = speechRecognizer.stopListening()
         val (file, durationMs) = audioRecorder.stopRecording()
         _isRecordingSheetOpen.value = false
 
@@ -139,61 +182,122 @@ class DictaphoneViewModel(
             "Запись ${repository.recordings.value.size + 1}"
         }
 
+        val tagsList = if (!customTag.isNullOrBlank()) {
+            listOf(customTag.trim().removePrefix("#"))
+        } else {
+            emptyList()
+        }
+
         val newRec = Recording(
             id = UUID.randomUUID().toString(),
             title = title,
             createdAt = System.currentTimeMillis(),
-            durationMs = durationMs.coerceAtLeast(3000L),
+            durationMs = durationMs.coerceAtLeast(4000L),
             filePath = file?.absolutePath,
             isSample = false,
-            tags = listOf("Заметка", "Голос"),
-            status = ProcessingStatus.TRANSCRIBING,
-            whisperModelUsed = whisperEngine.config.modelPath,
-            llamaModelUsed = llamaEngine.config.modelPath
+            tags = tagsList,
+            status = ProcessingStatus.PROCESSING
         )
 
         repository.addRecording(newRec)
         _selectedRecordingId.value = newRec.id
 
-        // Run full AI pipeline
-        runAiProcessingPipeline(newRec.id, file?.absolutePath, newRec.durationMs)
+        // Process audio & text with automatic speaker diarization
+        runAiProcessingPipeline(
+            recordingId = newRec.id,
+            realSegments = capturedSegments,
+            userText = customText,
+            audioPath = file?.absolutePath,
+            durationMs = newRec.durationMs,
+            title = title
+        )
     }
 
-    fun runAiProcessingPipeline(recordingId: String, audioPath: String?, durationMs: Long) {
+    fun switchRecordingSpeaker() {
+        speechRecognizer.switchSpeaker()
+    }
+
+    fun addTag(recordingId: String, tag: String) {
+        repository.addTagToRecording(recordingId, tag)
+    }
+
+    fun removeTag(recordingId: String, tag: String) {
+        repository.removeTagFromRecording(recordingId, tag)
+    }
+
+    fun reDiarize(recordingId: String, speakerCount: Int = 2) {
+        repository.reDiarizeRecording(recordingId, speakerCount)
+    }
+
+    fun toggleSegmentSpeaker(recordingId: String, segmentId: String) {
+        repository.toggleSegmentSpeaker(recordingId, segmentId)
+    }
+
+    fun importAudioFile(uri: Uri, context: Context) {
+        viewModelScope.launch {
+            try {
+                val inputStream = context.contentResolver.openInputStream(uri) ?: return@launch
+                val destDir = File(context.filesDir, "imported_audio").apply { if (!exists()) mkdirs() }
+                val destFile = File(destDir, "import_${System.currentTimeMillis()}.m4a")
+                val outputStream = FileOutputStream(destFile)
+                inputStream.copyTo(outputStream)
+                inputStream.close()
+                outputStream.close()
+
+                val newRec = Recording(
+                    id = UUID.randomUUID().toString(),
+                    title = "Импортированное аудио #${repository.recordings.value.size + 1}",
+                    createdAt = System.currentTimeMillis(),
+                    durationMs = 30000L,
+                    filePath = destFile.absolutePath,
+                    isSample = false,
+                    tags = emptyList(),
+                    status = ProcessingStatus.PROCESSING
+                )
+                repository.addRecording(newRec)
+                _selectedRecordingId.value = newRec.id
+                runAiProcessingPipeline(newRec.id, null, null, destFile.absolutePath, 30000L, newRec.title)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun runAiProcessingPipeline(
+        recordingId: String,
+        realSegments: List<com.example.data.model.TranscriptSegment>?,
+        userText: String?,
+        audioPath: String?,
+        durationMs: Long,
+        title: String
+    ) {
         viewModelScope.launch {
             _isAiGenerating.value = true
             val rec = repository.recordings.value.find { it.id == recordingId } ?: return@launch
 
-            // 1. Whisper Transcription
-            repository.updateRecording(rec.copy(status = ProcessingStatus.TRANSCRIBING))
-            val (fullTranscript, segments) = whisperEngine.transcribe(audioPath, durationMs)
+            repository.updateRecording(rec.copy(status = ProcessingStatus.PROCESSING))
 
-            val transcribedRec = rec.copy(
-                fullTranscript = fullTranscript,
-                segments = segments,
-                status = ProcessingStatus.GENERATING_AI
+            // 1. Process transcription & speaker diarization
+            val (fullTranscript, segments) = whisperEngine.processOrTranscribe(
+                realSegments,
+                userText,
+                audioPath,
+                durationMs,
+                title
             )
-            repository.updateRecording(transcribedRec)
 
-            // 2. Llama Text Generation (Summary, Action Items, Protocol, Cleaned Text)
-            val summary = llamaEngine.generateSummary(fullTranscript)
+            // 2. Generate summary, action items, and protocol dynamically from the actual text!
+            val summary = llamaEngine.generateSummary(fullTranscript, rec.title)
             val actionItems = llamaEngine.extractActionItems(fullTranscript)
             val protocol = llamaEngine.generateMeetingProtocol(rec.title, fullTranscript, rec.formattedDate)
-            val cleaned = llamaEngine.cleanTranscript(fullTranscript)
 
-            val welcomeChatMsg = AiChatMessage(
-                id = UUID.randomUUID().toString(),
-                isUser = false,
-                text = "Привет! Запись успешно обработана моделями Whisper и Llama. Вы можете задать мне любые вопросы по содержанию!"
-            )
-
-            val completedRec = transcribedRec.copy(
+            val completedRec = rec.copy(
+                fullTranscript = fullTranscript,
+                segments = segments,
                 summary = summary,
                 actionItems = actionItems,
                 meetingProtocol = protocol,
-                cleanedText = cleaned,
-                status = ProcessingStatus.COMPLETED,
-                chatMessages = listOf(welcomeChatMsg)
+                status = ProcessingStatus.COMPLETED
             )
             repository.updateRecording(completedRec)
             _isAiGenerating.value = false
@@ -229,27 +333,20 @@ class DictaphoneViewModel(
         audioPlayer.setSpeed(speed)
     }
 
-    // Interactive Q&A chat
-    fun sendChatMessage(recordingId: String, text: String) {
-        if (text.isBlank()) return
-        val userMsg = AiChatMessage(
-            id = UUID.randomUUID().toString(),
-            isUser = true,
-            text = text
-        )
-        repository.addChatMessage(recordingId, userMsg)
+    fun renameSpeaker(recordingId: String, oldName: String, newName: String) {
+        repository.renameSpeaker(recordingId, oldName, newName)
+    }
 
-        viewModelScope.launch {
-            val rec = repository.recordings.value.find { it.id == recordingId }
-            val transcript = rec?.fullTranscript ?: ""
-            val answer = llamaEngine.answerQuestion(text, transcript)
-            val botMsg = AiChatMessage(
-                id = UUID.randomUUID().toString(),
-                isUser = false,
-                text = answer
-            )
-            repository.addChatMessage(recordingId, botMsg)
-        }
+    fun updateSegmentText(recordingId: String, segmentId: String, newText: String) {
+        repository.updateSegmentText(recordingId, segmentId, newText)
+    }
+
+    fun updateNotes(recordingId: String, notes: String) {
+        repository.updateCustomNotes(recordingId, notes)
+    }
+
+    fun exportPdf(recording: Recording, context: Context): File? {
+        return PdfExporter.exportRecordingToPdf(context, recording)
     }
 
     fun toggleActionItem(recordingId: String, actionItemId: String) {
@@ -280,10 +377,23 @@ class DictaphoneViewModel(
         repository.updateLlamaConfig(config)
     }
 
+    fun updateAudioPreconfig(preconfig: AudioPreconfig) {
+        repository.updateAudioPreconfig(preconfig)
+    }
+
+    fun updateUserProfile(profile: UserProfile) {
+        repository.updateUserProfile(profile)
+    }
+
+    fun downloadModel(modelId: String) {
+        repository.downloadModel(modelId)
+    }
+
     override fun onCleared() {
         super.onCleared()
         audioPlayer.stop()
         audioRecorder.stopRecording()
+        speechRecognizer.stopListening()
         whisperEngine.release()
         llamaEngine.release()
     }

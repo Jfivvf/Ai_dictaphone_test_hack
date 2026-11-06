@@ -1,6 +1,8 @@
 package com.example.ui.recordings
 
-import androidx.compose.animation.AnimatedVisibility
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,21 +20,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SettingsVoice
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -42,25 +44,25 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
-import com.example.data.model.ProcessingStatus
 import com.example.data.model.Recording
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -71,51 +73,62 @@ fun RecordingsListScreen(
     selectedTag: String?,
     currentPlayingId: String?,
     isPlaying: Boolean,
-    whisperModelName: String,
-    llamaModelName: String,
     onSearchChange: (String) -> Unit,
     onTagSelect: (String?) -> Unit,
     onRecordingClick: (Recording) -> Unit,
     onQuickPlayToggle: (Recording) -> Unit,
     onToggleFavorite: (String) -> Unit,
+    onImportAudio: (Uri) -> Unit,
+    onOpenPreconfig: () -> Unit,
+    onOpenProfile: () -> Unit,
     onOpenRecordSheet: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { onImportAudio(it) }
+    }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = stringResource(R.string.app_name),
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                    Text(
+                        text = stringResource(R.string.app_name),
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                },
+                navigationIcon = {
+                    IconButton(
+                        onClick = onOpenProfile,
+                        modifier = Modifier.testTag("account_profile_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AccountCircle,
+                            contentDescription = "Профиль и статистика",
+                            tint = MaterialTheme.colorScheme.primary
                         )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF10B981))
-                            )
-                            Text(
-                                text = "Whisper & Llama активны",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = onOpenPreconfig,
+                        modifier = Modifier.testTag("audio_preconfig_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SettingsVoice,
+                            contentDescription = "Настройка микрофона",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     IconButton(
                         onClick = onOpenSettings,
                         modifier = Modifier.testTag("settings_top_bar_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Tune,
-                            contentDescription = "Настройки моделей",
+                            contentDescription = "Параметры",
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
@@ -126,21 +139,34 @@ fun RecordingsListScreen(
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onOpenRecordSheet,
-                icon = {
-                    Icon(
-                        imageVector = Icons.Default.Mic,
-                        contentDescription = "Запись",
-                        tint = Color.White
-                    )
-                },
-                text = {
-                    Text("Записать речь", color = Color.White, fontWeight = FontWeight.Bold)
-                },
-                containerColor = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.testTag("record_floating_action_button")
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Audio file import FAB
+                ExtendedFloatingActionButton(
+                    onClick = { audioPickerLauncher.launch("audio/*") },
+                    icon = { Icon(Icons.Default.FileUpload, contentDescription = null) },
+                    text = { Text("Импорт аудио", fontSize = 12.sp) },
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.testTag("import_audio_fab")
+                )
+
+                // Main record FAB
+                ExtendedFloatingActionButton(
+                    onClick = onOpenRecordSheet,
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = "Запись",
+                            tint = Color.White
+                        )
+                    },
+                    text = {
+                        Text("Записать речь", color = Color.White, fontWeight = FontWeight.Bold)
+                    },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.testTag("record_floating_action_button")
+                )
+            }
         }
     ) { innerPadding ->
         Column(
@@ -172,7 +198,7 @@ fun RecordingsListScreen(
             )
 
             // Category Filter Chips
-            val tags = listOf("Все", "Встреча", "Обучение", "Интервью", "AI", "Заметка")
+            val tags = listOf("Все", "Матанализ", "Лекция", "Учеба", "Семинар", "Заметка", "Импорт")
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -195,30 +221,42 @@ fun RecordingsListScreen(
                         .padding(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Mic,
                             contentDescription = null,
-                            modifier = Modifier.size(56.dp),
+                            modifier = Modifier.size(64.dp),
                             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "Записей пока нет",
-                            style = MaterialTheme.typography.titleMedium,
+                            text = "Пока нет записей",
+                            style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Нажмите «Записать речь» или выберите фильтр",
-                            style = MaterialTheme.typography.bodySmall,
+                            text = "Начните запись речи с микрофона или импортируйте аудиофайл",
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = onOpenRecordSheet,
+                            modifier = Modifier.testTag("empty_state_add_recording_button")
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Добавить запись", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             } else {
                 LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 88.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
@@ -267,7 +305,7 @@ private fun RecordingItemCard(
                     modifier = Modifier
                         .size(44.dp)
                         .testTag("quick_play_${recording.id}"),
-                    colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
+                    colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer
                     )
                 ) {
@@ -281,7 +319,7 @@ private fun RecordingItemCard(
 
                 Spacer(modifier = Modifier.width(12.dp))
 
-                // Title and Date
+                // Title, Date, and Duration
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = recording.title,
@@ -291,7 +329,7 @@ private fun RecordingItemCard(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "${recording.formattedDate} • ${recording.formattedDuration}",
+                        text = "${recording.formattedDate} • ${recording.formattedDuration} • ${recording.speakersCount} спикера",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -333,14 +371,9 @@ private fun RecordingItemCard(
                 )
             }
 
-            // Tags and AI status badges
-            Spacer(modifier = Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Tags
+            // Tags
+            if (recording.tags.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     recording.tags.take(3).forEach { tag ->
                         Box(
@@ -350,35 +383,6 @@ private fun RecordingItemCard(
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(text = "#$tag", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                }
-
-                // AI status badge
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (recording.actionItems.isNotEmpty()) {
-                        val completedCount = recording.actionItems.count { it.isCompleted }
-                        Text(
-                            text = "✓ $completedCount/${recording.actionItems.size}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-
-                    if (recording.status == ProcessingStatus.COMPLETED) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(MaterialTheme.colorScheme.primaryContainer)
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(10.dp), tint = MaterialTheme.colorScheme.primary)
-                                Spacer(modifier = Modifier.width(2.dp))
-                                Text("AI готов", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            }
                         }
                     }
                 }

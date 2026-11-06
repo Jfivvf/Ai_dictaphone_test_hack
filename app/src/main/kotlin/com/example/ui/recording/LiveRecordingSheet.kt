@@ -18,10 +18,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
@@ -63,15 +64,21 @@ fun LiveRecordingSheet(
     isPaused: Boolean,
     durationMs: Long,
     amplitudes: List<Float>,
+    liveText: String,
+    activeSpeaker: String,
+    liveSegments: List<com.example.data.model.TranscriptSegment>,
+    onSwitchSpeaker: () -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
-    onFinish: (String) -> Unit,
+    onFinish: (String, String, String) -> Unit,
     onCancel: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var title by remember { mutableStateOf("") }
+    var categoryTag by remember { mutableStateOf("") }
+    var userSpeechNotes by remember { mutableStateOf("") }
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
@@ -93,16 +100,17 @@ fun LiveRecordingSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = if (!isRecording) "Готов к записи" else if (isPaused) "Запись на паузе" else "Идет запись речи...",
+                text = if (!isRecording) "Готов к записи" else if (isPaused) "Пауза" else "Запись с микрофона...",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = if (isRecording && !isPaused) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             // Timer display
             val totalSec = durationMs / 1000
@@ -113,28 +121,28 @@ fun LiveRecordingSheet(
 
             Text(
                 text = formattedTime,
-                fontSize = 42.sp,
-                fontWeight = FontWeight.ExtraBold,
+                fontSize = 38.sp,
+                fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.primary
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Waveform visualizer
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(80.dp)
+                    .height(55.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 contentAlignment = Alignment.Center
             ) {
                 val primaryColor = MaterialTheme.colorScheme.primary
                 val secondaryColor = MaterialTheme.colorScheme.secondary
-                Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
-                    val count = 32
+                Canvas(modifier = Modifier.fillMaxWidth().height(44.dp)) {
+                    val count = 28
                     val barWidth = size.width / (count * 1.5f)
                     val spacing = barWidth * 0.5f
                     val displayAmps = if (amplitudes.isEmpty()) {
@@ -159,13 +167,111 @@ fun LiveRecordingSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Active Speaker Indicator & Switch Button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(if (isRecording && !isPaused) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Спикер: $activeSpeaker",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+
+                FilledIconButton(
+                    onClick = onSwitchSpeaker,
+                    modifier = Modifier.height(32.dp).testTag("switch_speaker_button"),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Сменить спикера ⇄", fontSize = 11.sp, color = Color.White)
+                    }
+                }
+            }
+
+            // Real-time dialogue turns history if recognized
+            if (liveSegments.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Распознанный диалог:",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    liveSegments.takeLast(3).forEach { seg ->
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "${seg.speaker}: ",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = seg.text,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 2
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Real-time live speech streaming text display
+            if (liveText.isNotBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "Слушаю: $liveText",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 2
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
 
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
-                label = { Text("Название заметки (опционально)") },
-                placeholder = { Text("Например: Обсуждение архитектуры") },
+                label = { Text("Тема или название записи") },
+                placeholder = { Text("Например: Лекция по матанализу") },
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("recording_title_input"),
@@ -173,7 +279,35 @@ fun LiveRecordingSheet(
                 shape = RoundedCornerShape(12.dp)
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = categoryTag,
+                onValueChange = { categoryTag = it },
+                label = { Text("Категория / тег (опционально)") },
+                placeholder = { Text("Например: Матанализ, Лекция") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("recording_category_input"),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = userSpeechNotes,
+                onValueChange = { userSpeechNotes = it },
+                label = { Text("Текст речи или тезисы (опционально)") },
+                placeholder = { Text("Текст лекции или диалога для диаризации по спикерам...") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(75.dp)
+                    .testTag("speech_notes_input"),
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Control Buttons
             Row(
@@ -185,7 +319,7 @@ fun LiveRecordingSheet(
                 IconButton(
                     onClick = onCancel,
                     modifier = Modifier
-                        .size(52.dp)
+                        .size(48.dp)
                         .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
                         .testTag("cancel_recording_button")
                 ) {
@@ -201,7 +335,7 @@ fun LiveRecordingSheet(
                     if (isRecording && !isPaused) {
                         Box(
                             modifier = Modifier
-                                .size(88.dp)
+                                .size(84.dp)
                                 .scale(pulseScale)
                                 .background(
                                     MaterialTheme.colorScheme.error.copy(alpha = 0.2f),
@@ -215,11 +349,11 @@ fun LiveRecordingSheet(
                             if (!isRecording) {
                                 onStart()
                             } else {
-                                onFinish(title)
+                                onFinish(title, userSpeechNotes, categoryTag)
                             }
                         },
                         modifier = Modifier
-                            .size(72.dp)
+                            .size(68.dp)
                             .testTag("main_record_action_button"),
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
@@ -227,9 +361,9 @@ fun LiveRecordingSheet(
                     ) {
                         Icon(
                             imageVector = if (!isRecording) Icons.Default.Mic else Icons.Default.Stop,
-                            contentDescription = if (!isRecording) "Старт" else "Сохранить и обработать AI",
+                            contentDescription = if (!isRecording) "Старт" else "Сохранить",
                             tint = Color.White,
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(34.dp)
                         )
                     }
                 }
@@ -241,7 +375,7 @@ fun LiveRecordingSheet(
                             if (isPaused) onResume() else onPause()
                         },
                         modifier = Modifier
-                            .size(52.dp)
+                            .size(48.dp)
                             .background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
                             .testTag("pause_resume_recording_button")
                     ) {
@@ -252,18 +386,9 @@ fun LiveRecordingSheet(
                         )
                     }
                 } else {
-                    Spacer(modifier = Modifier.size(52.dp))
+                    Spacer(modifier = Modifier.size(48.dp))
                 }
             }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text(
-                text = "После остановки речь будет распознана через Whisper, а Llama сформирует выжимку и задачи.",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
 
             Spacer(modifier = Modifier.height(16.dp))
         }

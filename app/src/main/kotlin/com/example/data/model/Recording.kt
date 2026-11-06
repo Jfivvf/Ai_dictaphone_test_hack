@@ -6,9 +6,7 @@ import java.util.Locale
 
 enum class ProcessingStatus {
     IDLE,
-    TRANSCRIBING,
-    TRANSCRIBED,
-    GENERATING_AI,
+    PROCESSING,
     COMPLETED,
     ERROR
 }
@@ -28,10 +26,7 @@ data class Recording(
     val summary: String = "",
     val actionItems: List<ActionItem> = emptyList(),
     val meetingProtocol: String = "",
-    val cleanedText: String = "",
-    val chatMessages: List<AiChatMessage> = emptyList(),
-    val whisperModelUsed: String = "whisper-base-ru.bin",
-    val llamaModelUsed: String = "llama-3.2-3b-instruct-q4.gguf"
+    val customNotes: String = ""
 ) {
     val formattedDuration: String
         get() {
@@ -46,4 +41,54 @@ data class Recording(
             val sdf = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("ru"))
             return sdf.format(Date(createdAt))
         }
+
+    val speakersList: List<String>
+        get() = segments.map { it.speaker }.distinct()
+
+    val speakersCount: Int
+        get() = speakersList.size.coerceAtLeast(1)
+
+    fun toMarkdown(): String {
+        return buildString {
+            appendLine("# $title")
+            appendLine("**Дата:** $formattedDate | **Длительность:** $formattedDuration")
+            if (speakersList.isNotEmpty()) {
+                appendLine("**Участники:** ${speakersList.joinToString(", ")}")
+            }
+            appendLine()
+
+            if (summary.isNotBlank()) {
+                appendLine("## Конспект и выжимка")
+                appendLine(summary)
+                appendLine()
+            }
+
+            if (actionItems.isNotEmpty()) {
+                appendLine("## Задачи и ключевые моменты")
+                actionItems.forEach { item ->
+                    val check = if (item.isCompleted) "[x]" else "[ ]"
+                    appendLine("- $check ${item.text}")
+                }
+                appendLine()
+            }
+
+            if (customNotes.isNotBlank()) {
+                appendLine("## Заметки")
+                appendLine(customNotes)
+                appendLine()
+            }
+
+            if (segments.isNotEmpty()) {
+                appendLine("## Стенограмма")
+                segments.forEach { segment ->
+                    appendLine("**[${segment.formattedTime}] ${segment.speaker}:**")
+                    appendLine(segment.text)
+                    appendLine()
+                }
+            } else if (fullTranscript.isNotBlank()) {
+                appendLine("## Текст записи")
+                appendLine(fullTranscript)
+            }
+        }
+    }
 }
