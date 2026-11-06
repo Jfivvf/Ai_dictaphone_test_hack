@@ -16,4 +16,4 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Assemble debug APK
-        run: ./gradlew --no-daemon :app:assembleDebug
+        run: bash gradlew --no-daemon :app:assembleDebug
