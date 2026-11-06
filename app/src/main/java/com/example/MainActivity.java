@@ -354,6 +354,11 @@ public class MainActivity extends ComponentActivity {
                 return;
             }
             recording = true;
+            recordingPaused = false;
+            recordingStartedAt = System.currentTimeMillis();
+            pausedTotalMs = 0;
+            ui.removeCallbacks(recordingTicker);
+            ui.post(recordingTicker);
             updateRecordButton();
             Intent service = new Intent(this, RecordingService.class).setAction(RecordingService.ACTION_START);
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
@@ -366,10 +371,8 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void updateRecordButton() {
-        // The control label is updated by rebuilding only the first action button.
-        if (root.getChildCount() > 2 && root.getChildAt(2) instanceof Button) {
-            ((Button) root.getChildAt(2)).setText(recording ? "Остановить запись" : "Начать запись");
-        }
+        if (recordButton != null) recordButton.setText(recording ? "Остановить и сохранить" : "Начать запись");
+        if (pauseButton != null) pauseButton.setEnabled(recording && Build.VERSION.SDK_INT >= 24);
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
