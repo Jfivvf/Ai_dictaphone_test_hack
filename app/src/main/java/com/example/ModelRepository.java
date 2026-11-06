@@ -86,11 +86,11 @@ final class ModelRepository {
             while ((n = in.read(b)) >= 0) {
                 out.write(b, 0, n);
                 done += n;
-                int p = total > 0 ? (int)(done * 100 / total) : -1;
+                long progressTotal = total > 0 ? total : expectedBytes;\n                int p = progressTotal > 0 ? (int)Math.min(100, done * 100 / progressTotal) : -1;
                 if (p != previous) {
                     previous = p;
                     final int progress = p;
-                    main.post(() -> callback.progress(label, progress));
+                    String progressLabel = label + " · " + formatSize(done) + (progressTotal > 0 ? " / " + formatSize(progressTotal) : "");\n                    main.post(() -> callback.progress(progressLabel, progress));
                 }
             }
         } finally {
@@ -102,6 +102,10 @@ final class ModelRepository {
             throw new IOException("Размер модели не совпадает с ожидаемым: " + actual + " из " + expectedBytes + " байт");
         }
         if (!part.renameTo(target)) throw new IOException("Не удалось сохранить скачанную модель");
+    }
+
+    private String formatSize(long bytes) {
+        return String.format(java.util.Locale.ROOT, "%.0f MB", bytes / (1024.0 * 1024.0));
     }
 
     private void extractFlat(File archive, File destination, String... keepNames) throws Exception {
