@@ -296,7 +296,9 @@ public class MainActivity extends ComponentActivity {
                                 transcriptEditor.setText(transcript);
                                 renderTranscriptSegments(transcript);
                             }
-                            setStatus(result.diarizationError == null\n                                    ? "Расшифровка и диаризация готовы · " + processingSeconds + " с"\n                                    : "Исходная расшифровка сохранена; диаризация не завершилась: " + result.diarizationError);
+                            setStatus(result.diarizationError == null
+                                    ? "Расшифровка и диаризация готовы · " + processingSeconds + " с"
+                                    : "Исходная расшифровка сохранена; диаризация не завершилась: " + result.diarizationError);
                             transcribeButton.setEnabled(true);
                         });
                     } catch (Exception e) {
