@@ -103,8 +103,10 @@ public class RecordingService extends Service {
     }
 
     private Notification buildNotification() {
-        return new Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("Идёт запись")
+        Notification.Builder builder;
+        if (Build.VERSION.SDK_INT >= 26) builder = new Notification.Builder(this, CHANNEL_ID);
+        else builder = new Notification.Builder(this);
+        return builder.setContentTitle("Идёт запись")
                 .setContentText("Аудио сохраняется локально на устройстве")
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setOngoing(true)
