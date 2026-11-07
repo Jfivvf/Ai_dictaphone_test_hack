@@ -77,7 +77,7 @@ final class NoteBuilder {
             item.put("speaker_id", s.speaker >= 0 ? "speaker_" + (s.speaker + 1) : "unknown");
             item.put("start_ms", s.startMs);
             item.put("end_ms", s.endMs);
-            item.put("text", text(s, clean));
+            item.put("text", s.text);
             array.put(item);
         }
         org.json.JSONObject root = new org.json.JSONObject();
