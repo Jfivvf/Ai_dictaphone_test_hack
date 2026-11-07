@@ -219,6 +219,87 @@ final class LocalTranscriptionEngine {
         }
     }
 
+    /**
+     * Расставляет говорящих в уже готовой расшифровке (режим Real-life): текст получен во время записи,
+     * здесь по звуку определяется, кто говорил. Реплика получает того, чьи речевые отрезки перекрывают её
+     * сильнее всего; соседние реплики одного человека склеиваются в одну.
+     */
+    static Result assignSpeakers(AudioDecoder.Pcm pcm, File segmentation, File embedding, int threads,
+                                 int speakerCount, List<Segment> live, Progress progress) {
+        progress.onProgress(ProgressTracker.Stage.DIARIZE, -1f, "");
+        List<Turn> turns = null;
+        String error = null;
+        try {
+            turns = diarize(pcm, segmentation, embedding, threads, speakerCount);
+        } catch (OutOfMemoryError e) {
+            error = "не хватило памяти для разделения говорящих";
+        } catch (Exception e) {
+            error = e.getMessage() == null || e.getMessage().trim().isEmpty()
+                    ? e.getClass().getSimpleName() : e.getMessage();
+        }
+        if (turns == null || turns.isEmpty()) {
+            return new Result(live, error == null ? "Говорящие не обнаружены" : error);
+        }
+        if (speakerCount <= 0) dropPhantomSpeakers(turns);
+
+        List<Segment> labelled = new ArrayList<>();
+        int previous = turns.get(0).speaker;
+        for (Segment segment : live) {
+            int speaker = speakerFor(turns, segment.startMs, segment.endMs, previous);
+            previous = speaker;
+            labelled.add(Segment.of(segment.startMs, segment.endMs, speaker, segment.text));
+        }
+        return new Result(mergeSameSpeaker(labelled), null);
+    }
+
+    private static int speakerFor(List<Turn> turns, long startMs, long endMs, int fallback) {
+        java.util.Map<Integer, Long> overlap = new java.util.HashMap<>();
+        int nearest = fallback;
+        long nearestGap = Long.MAX_VALUE;
+        for (Turn t : turns) {
+            if (t.speaker < 0) continue;
+            long common = Math.min(endMs, t.endMs) - Math.max(startMs, t.startMs);
+            if (common > 0) {
+                Long old = overlap.get(t.speaker);
+                overlap.put(t.speaker, (old == null ? 0 : old) + common);
+            } else {
+                long gap = Math.max(t.startMs - endMs, startMs - t.endMs);
+                if (gap < nearestGap) {
+                    nearestGap = gap;
+                    nearest = t.speaker;
+                }
+            }
+        }
+        int best = -1;
+        long bestOverlap = 0;
+        for (java.util.Map.Entry<Integer, Long> e : overlap.entrySet()) {
+            if (e.getValue() > bestOverlap) {
+                bestOverlap = e.getValue();
+                best = e.getKey();
+            }
+        }
+        if (best >= 0) return best;
+        return nearestGap <= 1500 ? nearest : fallback;
+    }
+
+    /** Склеивает подряд идущие реплики одного говорящего, если пауза между ними короткая. */
+    private static List<Segment> mergeSameSpeaker(List<Segment> segments) {
+        final long maxGap = 1500;
+        final long maxLength = 45000;
+        List<Segment> result = new ArrayList<>();
+        for (Segment s : segments) {
+            Segment last = result.isEmpty() ? null : result.get(result.size() - 1);
+            if (last != null && last.speaker == s.speaker && s.startMs - last.endMs <= maxGap
+                    && s.endMs - last.startMs <= maxLength) {
+                result.set(result.size() - 1,
+                        Segment.of(last.startMs, Math.max(last.endMs, s.endMs), s.speaker, last.text + " " + s.text));
+            } else {
+                result.add(s);
+            }
+        }
+        return result;
+    }
+
     /** Склеивает соседние куски одного говорящего с короткой паузой и отбрасывает совсем короткие. */
     private static List<Turn> mergeTurns(OfflineSpeakerDiarizationSegment[] raw) {
         List<Turn> sorted = new ArrayList<>();
@@ -243,19 +324,9 @@ final class LocalTranscriptionEngine {
             }
         }
         List<Turn> result = new ArrayList<>();
-
         for (Turn turn : merged) {
-            long duration = turn.endMs - turn.startMs;
-
-            if (duration >= MIN_TURN_MS) {
-                result.add(turn);
-            } else if (duration >= 150) {
-                // Короткую реплику сохраняем для Whisper,
-                // но не приписываем ей ненадёжного говорящего.
-                result.add(new Turn(turn.startMs, turn.endMs, -1));
-            }
+            if (turn.endMs - turn.startMs >= MIN_TURN_MS) result.add(turn);
         }
-
         return result;
     }
 

@@ -2,6 +2,9 @@ package com.example;
 
 import android.content.Intent;
 import android.os.Handler;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
@@ -20,7 +23,7 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
     private static final String[] MODE_HINTS = {
             "Звук без обработки телефона, максимум деталей. Лучше всего в тихой комнате",
             "Компактные файлы и быстрая обработка. Для чёткой речи рядом с микрофоном",
-            "Для шумных мест: подавление шума при записи и перед расшифровкой"
+            "Текст появляется прямо во время записи, с задержкой около секунды. Говорящие определяются после остановки"
     };
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -31,6 +34,8 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
     private TextView dbLabel;
     private TextView timer;
     private TextView errorText;
+    private TextView liveText;
+    private ScrollView liveScroll;
     private TextView recordLabel;
     private TextView pauseLabel;
     private Ui.Waveform wave;
@@ -109,6 +114,15 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
         controls.addView(column(importButton, Ui.text(ctx, "Импорт", 12, Palette.MUTED)), Ui.lp(0, -2, 1f));
         card.addView(controls, Ui.margins(Ui.lp(-1, -2), ctx, 0, 20, 0, 0));
 
+        // Текст, который расшифровывается прямо сейчас (режим Real-life).
+        liveText = Ui.text(ctx, "", 15, Palette.TEXT);
+        liveText.setLineSpacing(dp(2), 1f);
+        liveScroll = new ScrollView(ctx);
+        liveScroll.setVerticalScrollBarEnabled(false);
+        liveScroll.addView(liveText, new FrameLayout.LayoutParams(-1, -2));
+        liveScroll.setVisibility(View.GONE);
+        card.addView(liveScroll, Ui.margins(Ui.lp(-1, dp(120)), ctx, 0, 16, 0, 0));
+
         errorText = Ui.text(ctx, "", 13, Palette.RED);
         errorText.setGravity(Gravity.CENTER);
         errorText.setVisibility(View.GONE);
@@ -163,7 +177,9 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
         return col;
     }
 
-    private static String sizeText(int bitrate) {
+    private String sizeText(int bitrate) {
+        // В режиме Real-life звук пишется как WAV 16 кГц без сжатия.
+        if (settings.recordMode() == Settings.MODE_REAL_LIFE) bitrate = 16000 * 16;
         double mbPerHour = bitrate * 3600.0 / 8.0 / 1_000_000.0;
         return String.format(Locale.ROOT, "≈ %.0f МБ на час записи", mbPerHour);
     }
@@ -207,20 +223,28 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
         int state = RecordingService.state();
         boolean idle = state == RecordingService.STATE_IDLE;
         boolean paused = state == RecordingService.STATE_PAUSED;
+        boolean busy = state == RecordingService.STATE_BUSY;
 
-        int color = idle ? Palette.MUTED : paused ? Palette.ORANGE : Palette.RECORD;
+        int color = idle ? Palette.MUTED : paused || busy ? Palette.ORANGE : Palette.RECORD;
         dot.setBackground(Ui.oval(color));
-        stateLabel.setText(idle ? "Микрофон готов" : paused ? "Пауза" : "Идёт запись");
+        stateLabel.setText(idle ? "Микрофон готов" : busy ? RecordingService.busyLabel()
+                : paused ? "Пауза" : "Идёт запись");
         wave.setActiveColor(paused ? Palette.ORANGE : idle ? Palette.MUTED : Palette.RECORD);
 
         Ui.setButtonIcon(recordButton, idle ? R.drawable.ic_mic : R.drawable.ic_stop);
         recordLabel.setText(idle ? "Начать запись" : "Остановить и сохранить");
         Ui.setButtonIcon(pauseButton, paused ? R.drawable.ic_play : R.drawable.ic_pause);
         pauseLabel.setText(paused ? "Продолжить" : "Пауза");
-        pauseButton.setEnabled(!idle);
-        pauseButton.setAlpha(idle ? 0.35f : 1f);
+        pauseButton.setEnabled(!idle && !busy);
+        pauseButton.setAlpha(idle || busy ? 0.35f : 1f);
+        recordButton.setEnabled(!busy);
+        recordButton.setAlpha(busy ? 0.5f : 1f);
+        boolean live = settings.recordMode() == Settings.MODE_REAL_LIFE;
+        liveScroll.setVisibility(live && !idle ? View.VISIBLE : View.GONE);
+        if (live && !idle) showLive(RecordingService.liveCommitted(), RecordingService.livePartial());
 
         modeChoice.setEnabled(idle);
+        modeHint.setText(MODE_HINTS[settings.recordMode()]);
 
         ui.removeCallbacks(tick);
         if (idle) {
@@ -238,6 +262,24 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
     @Override public void onLevel(double db) {
         wave.push(db);
         dbLabel.setText(String.format(Locale.ROOT, "%.0f dB", Math.max(-60.0, Math.min(0.0, db))));
+    }
+
+    @Override public void onLive(String committed, String partial) {
+        showLive(committed, partial);
+    }
+
+    /** Показывает последние слова: законченные обычным цветом, произносимые сейчас приглушённым. */
+    private void showLive(String committed, String partial) {
+        String done = committed.length() > 700 ? "…" + committed.substring(committed.length() - 700) : committed;
+        SpannableStringBuilder text = new SpannableStringBuilder(done);
+        if (!partial.isEmpty()) {
+            if (text.length() > 0) text.append(' ');
+            int from = text.length();
+            text.append(partial);
+            text.setSpan(new ForegroundColorSpan(Palette.MUTED), from, text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        liveText.setText(text);
+        liveScroll.post(() -> liveScroll.fullScroll(View.FOCUS_DOWN));
     }
 
     @Override public void onState(int state, String error) {

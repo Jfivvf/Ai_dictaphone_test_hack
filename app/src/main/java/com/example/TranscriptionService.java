@@ -31,6 +31,8 @@ public class TranscriptionService extends Service {
     static final String EXTRA_ID = "recording_id";
     static final String EXTRA_OPEN = "open_recording";
     static final String ACTION_MODELS = "com.example.action.DOWNLOAD_MODELS";
+    /** Расшифровка уже есть (получена во время записи): нужно только определить говорящих. */
+    static final String EXTRA_SPEAKERS_ONLY = "speakers_only";
 
     private static final String CHANNEL_PROGRESS = "transcription";
     private static final String CHANNEL_DONE = "transcription_done";
@@ -82,6 +84,13 @@ public class TranscriptionService extends Service {
         ContextCompat.startForegroundService(context, intent);
     }
 
+    /** Ставит в очередь определение говорящих для записи, текст которой получен во время записи. */
+    static void enqueueSpeakers(Context context, long recordingId) {
+        Intent intent = new Intent(context, TranscriptionService.class)
+                .putExtra(EXTRA_ID, recordingId).putExtra(EXTRA_SPEAKERS_ONLY, true);
+        ContextCompat.startForegroundService(context, intent);
+    }
+
     /** Ставит запись в очередь. Бросает исключение, если система не разрешает запуск из фона. */
     static void enqueue(Context context, long recordingId) {
         Intent intent = new Intent(context, TranscriptionService.class).putExtra(EXTRA_ID, recordingId);
@@ -113,11 +122,13 @@ public class TranscriptionService extends Service {
             finishIfIdle();
             return START_NOT_STICKY;
         }
+        final boolean speakersOnly = intent.getBooleanExtra(EXTRA_SPEAKERS_ONLY, false);
         PENDING.incrementAndGet();
         db.setStatus(id, Status.QUEUED, "");
         worker.execute(() -> {
             try {
-                process(id);
+                if (speakersOnly) processSpeakers(id);
+                else process(id);
             } finally {
                 activeId = -1;
                 activeTracker = null;
@@ -239,6 +250,50 @@ public class TranscriptionService extends Service {
                     : e.getMessage() == null || e.getMessage().trim().isEmpty()
                     ? e.getClass().getSimpleName() : e.getMessage();
             db.setStatus(id, Status.ERROR, message);
+        }
+    }
+
+    /** Определение говорящих для готовой расшифровки. При неудаче расшифровка остаётся без разметки. */
+    private void processSpeakers(long id) {
+        File pcmFile = new File(getCacheDir(), "pcm_" + id + ".raw");
+        try {
+            Recording recording = db.get(id);
+            if (recording == null) return;
+            List<Segment> live = db.segments(id);
+            if (live.isEmpty()) return;
+
+            final ProgressTracker tracker = new ProgressTracker(false);
+            activeId = id;
+            activeTracker = tracker;
+            tracker.update(ProgressTracker.Stage.DECODE, -1f, "");
+            db.setStatus(id, Status.RECOGNIZING, "");
+            File[] diarization = models.ensureDiarization((label, percent) -> {
+                tracker.setNote(label, percent);
+                report(id);
+            });
+            tracker.setNote(null, -1);
+
+            db.setStatus(id, Status.RECOGNIZING, "");
+            AudioDecoder.Pcm pcm = AudioDecoder.fromWav(new File(recording.audioPath), pcmFile);
+            int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
+            LocalTranscriptionEngine.Result result = LocalTranscriptionEngine.assignSpeakers(
+                    pcm, diarization[0], diarization[1], threads, settings.speakerCount(), live,
+                    (stage, fraction, detail) -> {
+                        tracker.update(stage, fraction, detail);
+                        report(id);
+                    });
+            boolean withSpeakers = result.diarizationError == null;
+            db.saveResult(id, result.segments, withSpeakers ? Status.DONE : Status.DONE_NO_SPEAKERS,
+                    withSpeakers ? "" : "Говорящие не определены: " + result.diarizationError, pcm.durationMs());
+            db.replaceTasks(id, NoteBuilder.tasks(result.segments));
+            notifyDone(recording.title, id);
+        } catch (Throwable e) {
+            String reason = e instanceof OutOfMemoryError ? "не хватило памяти"
+                    : e.getMessage() == null || e.getMessage().trim().isEmpty() ? e.getClass().getSimpleName() : e.getMessage();
+            db.setStatus(id, Status.DONE_NO_SPEAKERS, "Говорящие не определены: " + reason);
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            pcmFile.delete();
         }
     }
 

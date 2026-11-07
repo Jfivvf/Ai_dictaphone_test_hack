@@ -88,6 +88,17 @@ final class TaskDetector {
             + "(?:нужно|надо|необходимо|должен|должна|должны|следует|придётся|придется|обязательно|давай|давайте|не\\s+забуд)",
             FLAGS);
 
+    /**
+     * Границы поручений внутри длинного куска без знаков препинания. Потоковые модели выдают текст строчными
+     * буквами и без точек, поэтому режем перед новым обязательством («...этого нужно сделать...») и перед
+     * сменой исполнителя («...пришлёт договор а я позвоню...»), а не по пунктуации.
+     */
+    private static final Pattern BOUNDARY = Pattern.compile("\\s+(?="
+            + "(?:(?:и|а|ещ[её]|потом|затем|также)\\s+)?(?:нужно|надо|необходимо|должен|должна|должны|следует|"
+            + "придётся|придется|давай|давайте|договорились|не\\s+забуд\\p{L}*)(?![\\p{L}\\p{N}])"
+            + "|(?:а|и|но)\\s+(?:я|мы)\\s+\\p{L}{4,})", FLAGS);
+    private static final Pattern LEAD = Pattern.compile("^(?:(?:и|а|но|ну|так|вот|значит|тогда|ещ[её]|потом|затем|также)\\s+)+", FLAGS);
+
     private TaskDetector() {}
 
     static List<Task> detect(List<Segment> segments) {
@@ -182,11 +193,23 @@ final class TaskDetector {
             }
         }
         clauses.add(current.toString());
-        return clauses;
+
+        List<String> result = new ArrayList<>();
+        for (String clause : clauses) {
+            int from = 0;
+            Matcher m = BOUNDARY.matcher(clause);
+            while (m.find()) {
+                if (wordCount(clause.substring(from, m.start())) < 2) continue;
+                result.add(clause.substring(from, m.start()));
+                from = m.end();
+            }
+            result.add(clause.substring(from));
+        }
+        return result;
     }
 
     private static String tidy(String clause) {
-        String text = clause.trim().replaceFirst("^(?:и|а|ещ[её]|потом|затем|также)\\s+", "");
+        String text = LEAD.matcher(clause.trim()).replaceFirst("");
         text = text.replaceAll("[,;:\\s]+$", "");
         if (!text.isEmpty()) text = Character.toUpperCase(text.charAt(0)) + text.substring(1);
         return text;

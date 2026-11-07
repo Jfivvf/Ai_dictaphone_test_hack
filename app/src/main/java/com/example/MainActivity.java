@@ -98,6 +98,10 @@ public class MainActivity extends ComponentActivity {
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> { });
     private final ActivityResultLauncher<String[]> importLauncher =
             registerForActivityResult(new ActivityResultContracts.OpenMultipleDocuments(), this::importFiles);
+    private final ActivityResultLauncher<Uri> realtimeModelsLauncher =
+            registerForActivityResult(new ActivityResultContracts.OpenDocumentTree(), uri -> {
+                if (uri != null) RealtimeModels.importAsync(this, uri);
+            });
     private final ActivityResultLauncher<String> pdfLauncher =
             registerForActivityResult(new ActivityResultContracts.CreateDocument("application/pdf"),
                     uri -> writeExport(uri, EXPORT_PDF));
@@ -363,6 +367,11 @@ public class MainActivity extends ComponentActivity {
         } catch (RuntimeException e) {
             toast("Не удалось начать загрузку: " + e.getMessage());
         }
+    }
+
+    /** Выбор папки с моделями Real-life (распакованный models_bundle или сама папка models). */
+    void pickRealtimeModels() {
+        realtimeModelsLauncher.launch(null);
     }
 
     void transcribe(long recordingId) {
