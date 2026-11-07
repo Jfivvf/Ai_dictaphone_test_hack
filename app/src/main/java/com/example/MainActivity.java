@@ -501,7 +501,7 @@ public class MainActivity extends ComponentActivity {
                 if (kind == EXPORT_PDF) {
                     PdfExporter.export(r, segments, tasks, clean, out);
                 } else if (kind == EXPORT_JSON) {
-                    out.write(NoteBuilder.json(segments, clean).getBytes(StandardCharsets.UTF_8));
+                    out.write(NoteBuilder.json(segments).getBytes(StandardCharsets.UTF_8));
                 } else {
                     out.write(NoteBuilder.markdown(r, segments, tasks, clean).getBytes(StandardCharsets.UTF_8));
                 }
