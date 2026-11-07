@@ -48,6 +48,9 @@ public class MainActivity extends ComponentActivity {
     private static final int TAB_LIBRARY = 1;
     private static final int TAB_TASKS = 2;
     private static final int TAB_SETTINGS = 3;
+    private static final int EXPORT_PDF = 0;
+    private static final int EXPORT_MARKDOWN = 1;
+    private static final int EXPORT_JSON = 2;
 
     private static final String[] TAB_LABELS = {"Запись", "Записи", "Задачи", "Настройки"};
     private static final int[] TAB_ICONS = {R.drawable.ic_mic, R.drawable.ic_list, R.drawable.ic_tasks,
@@ -97,10 +100,13 @@ public class MainActivity extends ComponentActivity {
             registerForActivityResult(new ActivityResultContracts.OpenMultipleDocuments(), this::importFiles);
     private final ActivityResultLauncher<String> pdfLauncher =
             registerForActivityResult(new ActivityResultContracts.CreateDocument("application/pdf"),
-                    uri -> writeExport(uri, true));
+                    uri -> writeExport(uri, EXPORT_PDF));
     private final ActivityResultLauncher<String> markdownLauncher =
             registerForActivityResult(new ActivityResultContracts.CreateDocument("text/markdown"),
-                    uri -> writeExport(uri, false));
+                    uri -> writeExport(uri, EXPORT_MARKDOWN));
+    private final ActivityResultLauncher<String> jsonLauncher =
+            registerForActivityResult(new ActivityResultContracts.CreateDocument("application/json"),
+                    uri -> writeExport(uri, EXPORT_JSON));
 
     // ---- создание -----------------------------------------------------------------------------
 
@@ -473,7 +479,14 @@ public class MainActivity extends ComponentActivity {
         markdownLauncher.launch(safeName(r.title) + ".md");
     }
 
-    private void writeExport(Uri destination, boolean pdf) {
+    void exportJson(long recordingId) {
+        Recording r = db.get(recordingId);
+        if (r == null) return;
+        exportTarget = recordingId;
+        jsonLauncher.launch(safeName(r.title) + ".json");
+    }
+
+    private void writeExport(Uri destination, int kind) {
         final long id = exportTarget;
         exportTarget = -1;
         if (destination == null || id < 0) return;
@@ -485,12 +498,15 @@ public class MainActivity extends ComponentActivity {
                 if (out == null || r == null) throw new IOException("Не удалось создать файл");
                 List<Segment> segments = db.segments(id);
                 List<Task> tasks = db.tasksFor(id);
-                if (pdf) {
+                if (kind == EXPORT_PDF) {
                     PdfExporter.export(r, segments, tasks, clean, out);
+                } else if (kind == EXPORT_JSON) {
+                    out.write(NoteBuilder.json(segments, clean).getBytes(StandardCharsets.UTF_8));
                 } else {
                     out.write(NoteBuilder.markdown(r, segments, tasks, clean).getBytes(StandardCharsets.UTF_8));
                 }
-                message = pdf ? "PDF сохранён" : "Markdown сохранён";
+                message = kind == EXPORT_PDF ? "PDF сохранён"
+                        : kind == EXPORT_JSON ? "JSON сохранён" : "Markdown сохранён";
             } catch (Exception e) {
                 message = "Не удалось сохранить файл" + (e.getMessage() == null ? "" : ": " + e.getMessage());
             }

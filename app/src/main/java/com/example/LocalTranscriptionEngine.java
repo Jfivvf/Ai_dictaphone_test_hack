@@ -27,7 +27,12 @@ import java.util.List;
  * Whisper в Sherpa-ONNX обрабатывает не больше 30 секунд звука за один проход и молча отбрасывает остальное,
  * поэтому весь файл целиком в него подавать нельзя. Расшифровка по репликам снимает это ограничение,
  * а граница каждой реплики берётся из диаризации, так что таймкоды и говорящие сходятся точно.
- * Текст не обрабатывается: слова-паразиты и повторы остаются как их распознала модель.
+ *
+ * Память: звук лежит на диске и читается кусками. Целиком в память он загружается один раз и только для
+ * диаризации (4 байта на отсчёт), после чего освобождается; расшифровка держит в памяти лишь один кусок.
+ *
+ * Защита от «выдуманных» слов: тишина и шум не отправляются в Whisper, повторяющиеся циклы и известные
+ * мусорные фразы вырезаются. Слова-паразиты и обычные повторы речи остаются как их распознала модель.
  */
 final class LocalTranscriptionEngine {
     interface Progress {
@@ -48,7 +53,7 @@ final class LocalTranscriptionEngine {
     private static final class Turn {
         long startMs;
         long endMs;
-        final int speaker;
+        int speaker;
 
         Turn(long startMs, long endMs, int speaker) {
             this.startMs = startMs;
@@ -62,22 +67,26 @@ final class LocalTranscriptionEngine {
     private static final int MAX_CHUNK = 25 * RATE;
     private static final int MIN_SPLIT = 15 * RATE;
     private static final long MERGE_GAP_MS = 800;
-    private static final long MIN_TURN_MS = 300;
+    private static final long MIN_TURN_MS = 400;
     private static final int CONTEXT = (int) (0.15 * RATE);
+    /** Ниже этой громкости (RMS после выравнивания) кусок считается тишиной и не расшифровывается. */
+    private static final float SILENCE_RMS = 0.004f;
 
     private LocalTranscriptionEngine() {}
 
-    static Result process(AudioDecoder.AudioData audio, File encoder, File decoder, File tokens,
+    /** speakerCount: 0 — определить автоматически, иначе точное число говорящих. */
+    static Result process(AudioDecoder.Pcm pcm, File encoder, File decoder, File tokens,
                           File segmentation, File embedding, String language, int threads,
-                          Progress progress) throws Exception {
-        final float[] samples = audio.samples;
-        final long totalMs = samples.length * 1000L / audio.sampleRate;
+                          int speakerCount, Progress progress) throws Exception {
+        final long totalMs = pcm.durationMs();
 
         progress.onStep("Определение говорящих", 0, 0);
         List<Turn> turns = null;
         String diarizationError = null;
         try {
-            turns = diarize(audio, segmentation, embedding, threads);
+            turns = diarize(pcm, segmentation, embedding, threads, speakerCount);
+        } catch (OutOfMemoryError e) {
+            diarizationError = "не хватило памяти для разделения говорящих";
         } catch (Exception e) {
             diarizationError = e.getMessage() == null || e.getMessage().trim().isEmpty()
                     ? e.getClass().getSimpleName() : e.getMessage();
@@ -86,20 +95,22 @@ final class LocalTranscriptionEngine {
             if (diarizationError == null) diarizationError = "Говорящие не обнаружены";
             turns = new ArrayList<>();
             turns.add(new Turn(0, totalMs, -1));
+        } else if (speakerCount <= 0) {
+            dropPhantomSpeakers(turns);
         }
 
         List<int[]> chunks = new ArrayList<>();           // {turnIndex, fromSample, toSample}
         for (int t = 0; t < turns.size(); t++) {
             Turn turn = turns.get(t);
-            int from = (int) Math.max(0, Math.min(samples.length, turn.startMs * RATE / 1000));
-            int to = (int) Math.max(from, Math.min(samples.length, turn.endMs * RATE / 1000));
-            int position = from;
+            long from = Math.max(0, Math.min(pcm.samples, turn.startMs * RATE / 1000));
+            long to = Math.max(from, Math.min(pcm.samples, turn.endMs * RATE / 1000));
+            long position = from;
             while (to - position > MAX_CHUNK) {
-                int split = quietestPoint(samples, position + MIN_SPLIT, position + MAX_CHUNK);
-                chunks.add(new int[]{t, position, split});
+                long split = quietestPoint(pcm, position + MIN_SPLIT, position + MAX_CHUNK);
+                chunks.add(new int[]{t, (int) position, (int) split});
                 position = split;
             }
-            if (to > position) chunks.add(new int[]{t, position, to});
+            if (to > position) chunks.add(new int[]{t, (int) position, (int) to});
         }
 
         List<Segment> result = new ArrayList<>();
@@ -108,19 +119,28 @@ final class LocalTranscriptionEngine {
             for (int i = 0; i < chunks.size(); i++) {
                 if (Thread.currentThread().isInterrupted()) throw new InterruptedException("Обработка остановлена");
                 int[] chunk = chunks.get(i);
-                int from = Math.max(0, chunk[1] - CONTEXT);
-                int to = Math.min(samples.length, chunk[2] + CONTEXT);
-                String text = recognize(recognizer, Arrays.copyOfRange(samples, from, to));
-                progress.onStep("Расшифровка", i + 1, chunks.size());
+                progress.onStep("Расшифровка", i, chunks.size());
+                float[] slice = pcm.read(chunk[1] - CONTEXT, chunk[2] + CONTEXT);
+                if (rms(slice) < SILENCE_RMS) continue;
+                long durationMs = (chunk[2] - chunk[1]) * 1000L / RATE;
+                String text = HallucinationFilter.clean(recognize(recognizer, slice), durationMs, rms(slice));
                 if (text.isEmpty()) continue;
                 result.add(Segment.of(chunk[1] * 1000L / RATE, chunk[2] * 1000L / RATE,
                         turns.get(chunk[0]).speaker, text));
             }
+            progress.onStep("Расшифровка", chunks.size(), chunks.size());
         } finally {
             recognizer.release();
         }
         if (result.isEmpty()) throw new IllegalStateException("Речь в записи не распознана");
         return new Result(result, diarizationError);
+    }
+
+    private static float rms(float[] data) {
+        if (data.length == 0) return 0;
+        double sum = 0;
+        for (float v : data) sum += (double) v * v;
+        return (float) Math.sqrt(sum / data.length);
     }
 
     private static OfflineRecognizer createRecognizer(File encoder, File decoder, File tokens,
@@ -158,8 +178,8 @@ final class LocalTranscriptionEngine {
         }
     }
 
-    private static List<Turn> diarize(AudioDecoder.AudioData audio, File segmentation, File embedding,
-                                      int threads) {
+    private static List<Turn> diarize(AudioDecoder.Pcm pcm, File segmentation, File embedding,
+                                      int threads, int speakerCount) throws java.io.IOException {
         OfflineSpeakerDiarization diarizer = null;
         try {
             OfflineSpeakerSegmentationPyannoteModelConfig pyannote =
@@ -177,7 +197,7 @@ final class LocalTranscriptionEngine {
                     embedding.getAbsolutePath(), Math.max(1, threads), false, "cpu");
 
             FastClusteringConfig clustering = new FastClusteringConfig();
-            clustering.setNumClusters(-1);
+            clustering.setNumClusters(speakerCount > 0 ? speakerCount : -1);
             clustering.setThreshold(0.5f);
             clustering.setComputeConfidence(true);
 
@@ -185,15 +205,18 @@ final class LocalTranscriptionEngine {
             config.setSegmentation(segmentationConfig);
             config.setEmbedding(embeddingConfig);
             config.setClustering(clustering);
-            config.setMinDurationOn(0.2f);
+            config.setMinDurationOn(0.3f);
             config.setMinDurationOff(0.5f);
 
             diarizer = new OfflineSpeakerDiarization(null, config);
-            if (diarizer.sampleRate() != audio.sampleRate) {
+            if (diarizer.sampleRate() != pcm.sampleRate) {
                 throw new IllegalStateException("Модель диаризации требует " + diarizer.sampleRate()
-                        + " Гц, декодировано " + audio.sampleRate + " Гц");
+                        + " Гц, декодировано " + pcm.sampleRate + " Гц");
             }
-            OfflineSpeakerDiarizationSegment[] raw = diarizer.process(audio.samples);
+            // Единственное место, где звук загружается в память целиком; массив освобождается сразу после.
+            float[] samples = pcm.readAll();
+            OfflineSpeakerDiarizationSegment[] raw = diarizer.process(samples);
+            samples = null;
             return mergeTurns(raw);
         } finally {
             if (diarizer != null) diarizer.release();
@@ -230,20 +253,74 @@ final class LocalTranscriptionEngine {
         return result;
     }
 
-    /** Самая тихая точка в окне: режем длинную реплику между словами, а не посреди слова. */
-    private static int quietestPoint(float[] samples, int from, int to) {
+    /**
+     * Самая тихая точка в окне: режем длинную реплику между словами, а не посреди слова.
+     * Окно читается с диска отдельно, поэтому память не растёт.
+     */
+    private static long quietestPoint(AudioDecoder.Pcm pcm, long from, long to) throws java.io.IOException {
         final int frame = RATE / 20; // 50 мс
-        int end = Math.min(to, samples.length);
-        int best = end;
+        long end = Math.min(to, pcm.samples);
+        if (end - from < frame) return end;
+        float[] window = pcm.read(from, end);
+        int best = window.length;
         float bestEnergy = Float.MAX_VALUE;
-        for (int start = from; start + frame <= end; start += frame) {
+        for (int start = 0; start + frame <= window.length; start += frame) {
             float energy = 0;
-            for (int i = start; i < start + frame; i++) energy += Math.abs(samples[i]);
+            for (int i = start; i < start + frame; i++) energy += Math.abs(window[i]);
             if (energy < bestEnergy) {
                 bestEnergy = energy;
                 best = start + frame / 2;
             }
         }
-        return best;
+        return from + best;
+    }
+
+    /**
+     * Убирает «призрачных» говорящих: шумовые всплески кластеризация иногда считает отдельным человеком.
+     * Говорящий с совсем малым временем речи передаёт свои реплики ближайшему соседу, остальные нумеруются
+     * заново в порядке появления.
+     */
+    private static void dropPhantomSpeakers(List<Turn> turns) {
+        java.util.Map<Integer, Long> spoken = new java.util.HashMap<>();
+        long total = 0;
+        for (Turn t : turns) {
+            long d = t.endMs - t.startMs;
+            total += d;
+            Long old = spoken.get(t.speaker);
+            spoken.put(t.speaker, (old == null ? 0 : old) + d);
+        }
+        long threshold = Math.max(8000, Math.round(total * 0.03));
+        java.util.Set<Integer> tiny = new java.util.HashSet<>();
+        for (java.util.Map.Entry<Integer, Long> e : spoken.entrySet()) {
+            if (e.getValue() < threshold) tiny.add(e.getKey());
+        }
+        if (!tiny.isEmpty() && tiny.size() < spoken.size()) {
+            for (int i = 0; i < turns.size(); i++) {
+                Turn t = turns.get(i);
+                if (!tiny.contains(t.speaker)) continue;
+                int before = -1;
+                int after = -1;
+                for (int k = i - 1; k >= 0; k--) {
+                    if (!tiny.contains(turns.get(k).speaker)) { before = k; break; }
+                }
+                for (int k = i + 1; k < turns.size(); k++) {
+                    if (!tiny.contains(turns.get(k).speaker)) { after = k; break; }
+                }
+                long gapBefore = before < 0 ? Long.MAX_VALUE : t.startMs - turns.get(before).endMs;
+                long gapAfter = after < 0 ? Long.MAX_VALUE : turns.get(after).startMs - t.endMs;
+                int pick = gapBefore <= gapAfter ? before : after;
+                if (pick >= 0) t.speaker = turns.get(pick).speaker;
+            }
+        }
+        java.util.Map<Integer, Integer> renumber = new java.util.HashMap<>();
+        for (Turn t : turns) {
+            if (t.speaker < 0) continue;
+            Integer mapped = renumber.get(t.speaker);
+            if (mapped == null) {
+                mapped = renumber.size();
+                renumber.put(t.speaker, mapped);
+            }
+            t.speaker = mapped;
+        }
     }
 }

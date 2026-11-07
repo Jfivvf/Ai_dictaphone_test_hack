@@ -344,7 +344,8 @@ final class DetailScreen extends BaseScreen {
             out.setSpan(new ClickableSpan() {
                 @Override public void onClick(View widget) { playFrom(ms); }
                 @Override public void updateDrawState(TextPaint paint) {
-                    paint.setUnderlineText(false);
+                    paint.setColor(Palette.ACCENT_SOFT);
+                    paint.setUnderlineText(true);
                 }
             }, matcher.start(1), matcher.end(1), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
@@ -391,8 +392,12 @@ final class DetailScreen extends BaseScreen {
         if (s.speaker >= 0) {
             head.addView(Ui.bold(ctx, recording.speakerName(s.speaker), 13, colored ? accent : Palette.TEXT));
         }
-        head.addView(Ui.mono(ctx, Fmt.stamp(s.startMs), 12, Palette.MUTED),
-                Ui.margins(Ui.lp(-2, -2), ctx, s.speaker >= 0 ? 8 : 0, 0, 0, 0));
+        TextView stamp = Ui.mono(ctx, "▶ " + Fmt.stamp(s.startMs), 12, Palette.ACCENT_SOFT);
+        stamp.setPadding(dp(8), dp(5), dp(8), dp(5));
+        stamp.setBackground(Ui.ripple(Ui.box(ctx, Palette.alpha(Palette.ACCENT, 0x2E), 10)));
+        stamp.setContentDescription("Перейти к " + Fmt.stamp(s.startMs));
+        stamp.setOnClickListener(v -> playFrom(s.startMs));
+        head.addView(stamp, Ui.margins(Ui.lp(-2, -2), ctx, s.speaker >= 0 ? 8 : 0, 0, 0, 0));
         column.addView(head);
         TextView text = Ui.text(ctx, NoteBuilder.text(s, settings.cleanText()), 15, Palette.TEXT);
         text.setLineSpacing(dp(2), 1f);
@@ -587,6 +592,7 @@ final class DetailScreen extends BaseScreen {
             menu.getMenu().add(0, 3, 2, "Сохранить PDF");
             menu.getMenu().add(0, 4, 3, "Сохранить markdown");
             menu.getMenu().add(0, 5, 4, "Копировать конспект");
+            menu.getMenu().add(0, 8, 5, "Сохранить JSON");
         }
         if (recording != null && !Status.isBusy(recording.status)) menu.getMenu().add(0, 6, 5, "Расшифровать заново");
         menu.getMenu().add(0, 7, 6, "Удалить");
@@ -599,6 +605,7 @@ final class DetailScreen extends BaseScreen {
                 case 5: copyNote(); return true;
                 case 6: retranscribe(); return true;
                 case 7: host.confirmDelete(recording); return true;
+                case 8: host.exportJson(id); return true;
                 default: return false;
             }
         });
