@@ -178,49 +178,9 @@ final class NoteBuilder {
         return result;
     }
 
-    private static final String B = "(?<![\\p{L}\\p{N}])";
-    private static final String E = "(?![\\p{L}\\p{N}])";
-    private static final int FLAGS = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
-
-    private static final Pattern TASK = Pattern.compile(B + "(?:" +
-            "нужно|надо|необходимо|должен|должна|должны|следует|придётся|придется|обязательно|" +
-            "не\\s+забуд(?:ь|ьте)|напомни(?:те)?|договорились|задач[аиуе]|дедлайн|срок|" +
-            "сделаю|сделаем|подготовлю|подготовим|отправлю|отправим|напишу|напишем|позвоню|позвоним|" +
-            "проверю|проверим|пришлю|пришлём|пришлем|скину|скинем|закончу|закончим|займусь|займёмся|займемся|" +
-            "организую|организуем|согласую|согласуем|уточню|уточним|выясню|выясним|договорюсь|договоримся|" +
-            "созвонимся|встретимся|оформлю|оформим|исправлю|исправим|доделаю|доделаем|запланирую|запланируем|" +
-            "назначу|назначим|отвечу|ответим|куплю|купим|закажу|закажем|заберу|заберём|заберем|" +
-            "подпишу|подпишем|посмотрю|посмотрим|разберусь|разберёмся|разберемся|обсудим|решим|составлю|составим" +
-            ")" + E, FLAGS);
-
-    private static final Pattern REQUEST = Pattern.compile(B + "давай(?:те)?" + E, FLAGS);
-
-    private static final String DAYS = "понедельник[а]?|вторник[а]?|сред[ыу]|четверг[а]?|пятниц[ыу]|суббот[ыу]|воскресень[яе]";
-    private static final String MONTHS = "января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря";
-    private static final Pattern DEADLINE = Pattern.compile(B + "(?:" +
-            "до\\s+(?:конца\\s+(?:дня|недели|месяца|года)|(?:" + DAYS + ")|завтра|послезавтра|\\d{1,2}(?:[.]\\d{1,2}(?:[.]\\d{2,4})?|\\s+(?:" + MONTHS + ")))" +
-            "|(?:завтра|послезавтра|на\\s+следующей\\s+неделе|в\\s+(?:понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье))" +
-            ")" + E, FLAGS);
-
+    /** Задачи из расшифровки; правила и баллы — в {@link TaskDetector}. */
     static List<Task> tasks(List<Segment> segments) {
-        List<Task> result = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-        for (int i = 0; i < segments.size(); i++) {
-            Segment segment = segments.get(i);
-            for (String sentence : splitSentences(segment.text)) {
-                int words = wordCount(sentence);
-                if (words < 3 || words > 60) continue;
-                boolean question = sentence.endsWith("?");
-                boolean matches = REQUEST.matcher(sentence).find()
-                        || (!question && TASK.matcher(sentence).find());
-                if (!matches) continue;
-                if (!seen.add(sentence.toLowerCase(Locale.ROOT))) continue;
-                Matcher d = DEADLINE.matcher(sentence);
-                String deadline = d.find() ? d.group().trim() : "";
-                result.add(Task.found(i, segment.startMs, segment.speaker, sentence, deadline));
-                if (result.size() >= 30) return result;
-            }
-        }
-        return result;
+        return TaskDetector.detect(segments);
     }
+
 }
