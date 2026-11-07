@@ -37,7 +37,10 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-
+/**
+ * Одна запись: расшифровка по репликам с таймкодами, конспект в markdown, плеер и действия над записью.
+ * Нажатие на реплику или таймкод переносит воспроизведение к этому месту.
+ */
 final class DetailScreen extends BaseScreen {
     private static final int TAB_TRANSCRIPT = 0;
     private static final int TAB_NOTE = 1;
@@ -51,7 +54,7 @@ final class DetailScreen extends BaseScreen {
     private List<Segment> segments = new ArrayList<>();
     private List<Task> tasks = new ArrayList<>();
     private int tab = TAB_TRANSCRIPT;
-    private TextView denoiseChip;
+
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LinearLayout root;
     private TextView titleView;
@@ -148,17 +151,6 @@ final class DetailScreen extends BaseScreen {
             rebuildViews();
         });
         denoiseChip = Ui.toggleChip(ctx, "Шумоподавление", settings.denoise(), v -> toggleDenoise());
-<<<<<<< HEAD
-        options.addView(colorChip);
-        options.addView(cleanChip, Ui.margins(Ui.lp(-2, -2), ctx, 8, 0, 0, 0));
-        options.addView(denoiseChip, Ui.margins(Ui.lp(-2, -2), ctx, 8, 0, 0, 0));
-        HorizontalScrollView optionsScroll = new HorizontalScrollView(ctx);
-        optionsScroll.setHorizontalScrollBarEnabled(false);
-        optionsScroll.addView(options);
-        root.addView(optionsScroll, Ui.margins(Ui.lp(-1, -2), ctx, 16, 10, 16, 0));
-        
-=======
->>>>>>> d76fd6acf65fafb07533b401b4b1548401b08529
         options.addView(colorChip);
         options.addView(cleanChip, Ui.margins(Ui.lp(-2, -2), ctx, 8, 0, 0, 0));
         options.addView(denoiseChip, Ui.margins(Ui.lp(-2, -2), ctx, 8, 0, 0, 0));
@@ -244,6 +236,8 @@ final class DetailScreen extends BaseScreen {
         super.onDataChanged(recordingId);
     }
 
+    // ---- данные -------------------------------------------------------------------------------
+
     @Override void refresh() {
         Recording fresh = db.get(id);
         if (fresh == null) {
@@ -313,6 +307,8 @@ final class DetailScreen extends BaseScreen {
         statusBox.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
+    // ---- вкладки и отображение ----------------------------------------------------------------
+
     private void showTab(int index) {
         tab = index;
         transcriptList.setVisibility(index == TAB_TRANSCRIPT ? View.VISIBLE : View.GONE);
@@ -346,6 +342,7 @@ final class DetailScreen extends BaseScreen {
         noteText.setText(out);
     }
 
+    /** Делает таймкоды в конспекте нажимаемыми: нажатие запускает воспроизведение с этого места. */
     private void linkTimecodes(SpannableStringBuilder out, Pattern pattern) {
         Matcher matcher = pattern.matcher(out);
         while (matcher.find()) {
@@ -429,6 +426,8 @@ final class DetailScreen extends BaseScreen {
         }
     }
 
+    // ---- плеер --------------------------------------------------------------------------------
+
     private void preparePlayer() {
         if (playerTried || recording == null) return;
         playerTried = true;
@@ -511,6 +510,7 @@ final class DetailScreen extends BaseScreen {
         updateTime(ms);
     }
 
+    /** Переходит к таймкоду и запускает воспроизведение. */
     void playFrom(long ms) {
         if (player == null) {
             host.toast("Аудиофайл недоступен");
@@ -526,6 +526,7 @@ final class DetailScreen extends BaseScreen {
         startPlayer();
     }
 
+    /** Показывает место в записи без запуска звука: переход из списка задач. */
     private void focus(long ms) {
         showTabProgrammatically();
         int index = segmentAt(ms);
@@ -576,6 +577,7 @@ final class DetailScreen extends BaseScreen {
         return found;
     }
 
+    /** Подсвечивает реплику, которая звучит сейчас, и подводит к ней список, если его не листают вручную. */
     private void highlight(long position) {
         int index = segmentAt(position);
         if (index == currentSegment) return;
@@ -586,6 +588,8 @@ final class DetailScreen extends BaseScreen {
             transcriptList.smoothScrollToPositionFromTop(index, dp(60));
         }
     }
+
+    // ---- действия -----------------------------------------------------------------------------
 
     private void showMenu(View anchor) {
         PopupMenu menu = new PopupMenu(ctx, anchor);
@@ -637,17 +641,6 @@ final class DetailScreen extends BaseScreen {
         settings.setDenoise(on);
         Ui.styleToggleChip(ctx, denoiseChip, on);
         if (recording == null || segments.isEmpty() || Status.isBusy(recording.status)) return;
-<<<<<<< HEAD
-            Ui.dialog(ctx).setTitle(on ? "Включить шумоподавление?" : "Выключить шумоподавление?")
-                    .setMessage("Шумоподавление работает со звуком до расшифровки. Чтобы оно применилось к этой записи, "
-                            + "нужно расшифровать её заново: правки в репликах и имена говорящих будут заменены.")
-                    .setPositiveButton("Расшифровать заново", (d, w) -> host.transcribe(id))
-                    .setNegativeButton("Позже", null)
-                    .show();
-    }
-
-    
-=======
         Ui.dialog(ctx).setTitle(on ? "Включить шумоподавление?" : "Выключить шумоподавление?")
                 .setMessage("Шумоподавление работает со звуком до расшифровки. Чтобы оно применилось к этой записи, "
                         + "нужно расшифровать её заново: правки в репликах и имена говорящих будут заменены.")
@@ -656,7 +649,6 @@ final class DetailScreen extends BaseScreen {
                 .show();
     }
 
->>>>>>> d76fd6acf65fafb07533b401b4b1548401b08529
     private void copyNote() {
         String markdown = NoteBuilder.markdown(recording, segments, tasks, settings.cleanText());
         ClipboardManager clipboard = (ClipboardManager) ctx.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -766,6 +758,7 @@ final class DetailScreen extends BaseScreen {
                 .show();
     }
 
+    // ---- жизненный цикл -----------------------------------------------------------------------
 
     private void releasePlayer() {
         ui.removeCallbacks(playTick);
