@@ -82,6 +82,18 @@ final class ModelRepository {
             archive.delete();
         }
 
+        File[] diarization = ensureDiarization(progress);
+        File seg = diarization[0];
+        File emb = diarization[1];
+
+        if (!enc.isFile() || !dec.isFile() || !tok.isFile() || !seg.isFile() || !emb.isFile()) {
+            throw new IOException("Загрузка моделей завершилась не полностью");
+        }
+        return new Models(enc, dec, tok, seg, emb);
+    }
+
+    /** Блокирующий вызов: скачивает только модели разделения говорящих. Возвращает {сегментация, голоса}. */
+    File[] ensureDiarization(Progress progress) throws Exception {
         File diarDir = new File(root, "diarization");
         diarDir.mkdirs();
         File seg = segmentationFile();
@@ -96,11 +108,8 @@ final class ModelRepository {
         }
         File emb = embeddingFile();
         if (!emb.isFile()) download(EMBED, emb, "Загрузка модели голосов", 39593761L, progress);
-
-        if (!enc.isFile() || !dec.isFile() || !tok.isFile() || !seg.isFile() || !emb.isFile()) {
-            throw new IOException("Загрузка моделей завершилась не полностью");
-        }
-        return new Models(enc, dec, tok, seg, emb);
+        if (!seg.isFile() || !emb.isFile()) throw new IOException("Загрузка моделей разделения говорящих не завершилась");
+        return new File[]{seg, emb};
     }
 
     /** Блокирующий вызов: скачивает модель шумоподавления при первом использовании и возвращает путь к ней. */

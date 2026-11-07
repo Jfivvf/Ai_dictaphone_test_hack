@@ -20,6 +20,7 @@ import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -35,12 +36,16 @@ public class RecordingService extends Service {
     static final int STATE_IDLE = 0;
     static final int STATE_RECORDING = 1;
     static final int STATE_PAUSED = 2;
+    /** Идёт загрузка модели перед записью или завершение расшифровки после остановки; подпись — {@link #busyLabel()}. */
+    static final int STATE_BUSY = 3;
 
     interface Listener {
         /** Уровень сигнала в dBFS от -60 до 0. */
         void onLevel(double db);
         /** Состояние записи изменилось, либо запись завершилась ошибкой (error != null). */
         void onState(int state, String error);
+        /** Расшифровка во время записи: законченные фразы и то, что говорится сейчас. */
+        default void onLive(String committed, String partial) { }
     }
 
     private static volatile int state = STATE_IDLE;
@@ -51,6 +56,14 @@ public class RecordingService extends Service {
     static int state() { return state; }
 
     static void setListener(Listener value) { listener = value; }
+
+    private static volatile String busyLabel = "";
+    private static volatile String liveCommitted = "";
+    private static volatile String livePartial = "";
+
+    static String busyLabel() { return busyLabel; }
+    static String liveCommitted() { return liveCommitted; }
+    static String livePartial() { return livePartial; }
 
     /** Сколько секунд записано без учёта пауз. */
     static long elapsedMs() {
@@ -63,6 +76,8 @@ public class RecordingService extends Service {
     private static final int NOTIFICATION_ID = 41;
 
     private MediaRecorder recorder;
+    /** Запись с расшифровкой в реальном времени (режим Real-life); null в остальных режимах. */
+    private volatile RealtimeRecorder live;
     private String outputPath;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable meterTask = new Runnable() {
@@ -91,7 +106,7 @@ public class RecordingService extends Service {
             pauseRecording();
         } else if (ACTION_RESUME.equals(action)) {
             resumeRecording();
-        } else if (recorder == null) {
+        } else if (recorder == null && live == null && state == STATE_IDLE) {
             startRecording();
         }
         return START_NOT_STICKY;
@@ -108,6 +123,10 @@ public class RecordingService extends Service {
             outputPath = new File(dir, "recording_" + stamp + ".m4a").getAbsolutePath();
 
             Settings settings = new Settings(this);
+            if (settings.recordMode() == Settings.MODE_REAL_LIFE) {
+                startLive(settings, dir, stamp);
+                return;
+            }
             recorder = Build.VERSION.SDK_INT >= 31 ? new MediaRecorder(this) : new MediaRecorder();
             recorder.setAudioSource(settings.mediaRecorderSource());
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
@@ -132,6 +151,14 @@ public class RecordingService extends Service {
     }
 
     private void pauseRecording() {
+        if (live != null && state == STATE_RECORDING) {
+            live.pause();
+            accumulatedMs += SystemClock.elapsedRealtime() - resumedAt;
+            setState(STATE_PAUSED, null);
+            Listener l = listener;
+            if (l != null) l.onLevel(-60);
+            return;
+        }
         if (recorder == null || state != STATE_RECORDING) return;
         try {
             recorder.pause();
@@ -147,6 +174,12 @@ public class RecordingService extends Service {
     }
 
     private void resumeRecording() {
+        if (live != null && state == STATE_PAUSED) {
+            live.resume();
+            resumedAt = SystemClock.elapsedRealtime();
+            setState(STATE_RECORDING, null);
+            return;
+        }
         if (recorder == null || state != STATE_PAUSED) return;
         try {
             recorder.resume();
@@ -162,6 +195,11 @@ public class RecordingService extends Service {
 
     private void stopRecording() {
         main.removeCallbacks(meterTask);
+        if (state == STATE_BUSY && live == null && "Завершение расшифровки".equals(busyLabel)) return;
+        if (live != null) {
+            finishLive(null);
+            return;
+        }
         if (recorder == null) {
             setState(STATE_IDLE, null);
             finish();
@@ -201,6 +239,119 @@ public class RecordingService extends Service {
         }
         setState(STATE_IDLE, error);
         finish();
+    }
+
+
+    // ---- запись с расшифровкой в реальном времени ---------------------------------------------
+
+    /** Загружает модель и запускает микрофон в фоновом потоке: загрузка большой модели занимает секунды. */
+    private void startLive(final Settings settings, final File dir, final String stamp) {
+        busyLabel = "Загрузка модели";
+        liveCommitted = "";
+        livePartial = "";
+        setState(STATE_BUSY, null);
+        new Thread(() -> {
+            try {
+                RealtimeModels.Files files = new RealtimeModels(this)
+                        .open(RealtimeModels.languageFor(settings.language()));
+                outputPath = new File(dir, "recording_" + stamp + ".wav").getAbsolutePath();
+                int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() - 2));
+                final RealtimeRecorder started = RealtimeRecorder.start(new File(outputPath), files, threads,
+                        new RealtimeRecorder.Callbacks() {
+                            @Override public void onLevel(final double db) {
+                                main.post(() -> {
+                                    Listener l = listener;
+                                    if (l != null && state == STATE_RECORDING) l.onLevel(db);
+                                });
+                            }
+
+                            @Override public void onText(final String committed, final String partial) {
+                                liveCommitted = committed;
+                                livePartial = partial;
+                                main.post(() -> {
+                                    Listener l = listener;
+                                    if (l != null) l.onLive(committed, partial);
+                                });
+                            }
+
+                            @Override public void onFailure(final String message) {
+                                main.post(() -> finishLive(message));
+                            }
+                        });
+                main.post(() -> {
+                    if (state != STATE_BUSY) {
+                        // Пока грузилась модель, запись отменили.
+                        new Thread(() -> {
+                            try { started.stop(); } catch (Exception ignored) { }
+                            new File(outputPath).delete();
+                        }).start();
+                        return;
+                    }
+                    live = started;
+                    accumulatedMs = 0;
+                    resumedAt = SystemClock.elapsedRealtime();
+                    setState(STATE_RECORDING, null);
+                });
+            } catch (final Throwable e) {
+                if (outputPath != null) new File(outputPath).delete();
+                final String message = e.getMessage() == null || e.getMessage().trim().isEmpty()
+                        ? "Не удалось начать запись" : e.getMessage();
+                main.post(() -> fail(message));
+            }
+        }, "realtime-start").start();
+    }
+
+    /** Останавливает запись, дожидается конца расшифровки и сохраняет результат. error — причина аварийной остановки. */
+    private void finishLive(final String error) {
+        final RealtimeRecorder recorder = live;
+        if (recorder == null) return;
+        live = null;
+        final long elapsed = elapsedMs();
+        busyLabel = "Завершение расшифровки";
+        setState(STATE_BUSY, null);
+        final String path = outputPath;
+        new Thread(() -> {
+            String problem = error;
+            List<Segment> segments = null;
+            try {
+                segments = recorder.stop();
+            } catch (Exception e) {
+                if (problem == null) problem = e.getMessage() == null ? "Не удалось сохранить запись" : e.getMessage();
+            }
+            try {
+                File file = path == null ? null : new File(path);
+                if (file == null || file.length() <= 44 + 3200) {
+                    if (file != null) file.delete();
+                    if (problem == null) problem = "Запись слишком короткая или повреждена";
+                } else {
+                    long duration = (file.length() - 44) / 2 * 1000L / RealtimeTranscriber.RATE;
+                    if (duration <= 0) duration = elapsed;
+                    String title = "Запись " + new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(new Date());
+                    RecordingDb db = RecordingDb.get(this);
+                    long id = db.add(title, path, Status.RECORDED, duration);
+                    if (segments != null && !segments.isEmpty()) {
+                        db.saveResult(id, segments, Status.DONE_NO_SPEAKERS, "", duration);
+                        db.replaceTasks(id, NoteBuilder.tasks(segments));
+                        try {
+                            TranscriptionService.enqueueSpeakers(this, id);
+                        } catch (RuntimeException notAllowed) {
+                            // Расшифровка сохранена; говорящих можно определить позже.
+                        }
+                    } else if (problem == null) {
+                        problem = "Речь в записи не распознана";
+                    }
+                }
+            } catch (RuntimeException e) {
+                problem = "Не удалось сохранить запись в базу";
+            }
+            final String shown = problem;
+            main.post(() -> {
+                liveCommitted = "";
+                livePartial = "";
+                setState(STATE_IDLE, shown);
+                finish();
+            });
+        }, "realtime-finish").start();
     }
 
     private void fail(String message) {
@@ -256,7 +407,7 @@ public class RecordingService extends Service {
 
     @Override public void onDestroy() {
         releaseRecorder();
-        if (state != STATE_IDLE) state = STATE_IDLE;
+        if (state != STATE_IDLE && live == null && state != STATE_BUSY) state = STATE_IDLE;
         super.onDestroy();
     }
 

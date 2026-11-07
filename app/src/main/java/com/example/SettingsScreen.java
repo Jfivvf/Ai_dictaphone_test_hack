@@ -23,6 +23,7 @@ final class SettingsScreen extends BaseScreen {
     private final ScrollView scroll;
     private final ModelRepository models;
     private LinearLayout modelsBody;
+    private LinearLayout liveBody;
 
     SettingsScreen(MainActivity host) {
         super(host);
@@ -108,6 +109,14 @@ final class SettingsScreen extends BaseScreen {
         modelsBody.setOrientation(LinearLayout.VERTICAL);
         modelsCard.addView(modelsBody, Ui.margins(Ui.lp(-1, -2), ctx, 0, 10, 0, 0));
         page.addView(modelsCard);
+
+        // Модели Real-life
+        page.addView(Ui.space(ctx, 16));
+        LinearLayout liveCard = section("Модели Real-life");
+        liveBody = new LinearLayout(ctx);
+        liveBody.setOrientation(LinearLayout.VERTICAL);
+        liveCard.addView(liveBody, Ui.margins(Ui.lp(-1, -2), ctx, 0, 10, 0, 0));
+        page.addView(liveCard);
         return page;
     }
 
@@ -148,6 +157,7 @@ final class SettingsScreen extends BaseScreen {
     // ---- модели -------------------------------------------------------------------------------
 
     @Override void refresh() {
+        refreshLiveModels();
         modelsBody.removeAllViews();
         boolean installed = models.installed();
         boolean busy = TranscriptionService.isDownloadingModels();
@@ -176,6 +186,38 @@ final class SettingsScreen extends BaseScreen {
         }
         modelsBody.addView(Ui.primaryButton(ctx, error.isEmpty() ? "Скачать модели" : "Повторить загрузку",
                 v -> host.downloadModels()), Ui.margins(Ui.lp(-1, -2), ctx, 0, 14, 0, 0));
+    }
+
+    /** Состояние потоковых моделей: расшифровка во время записи в режиме Real-life. */
+    private void refreshLiveModels() {
+        liveBody.removeAllViews();
+        if (RealtimeModels.isImporting()) {
+            liveBody.addView(Ui.text(ctx, RealtimeModels.importLabel(), 13, Palette.ACCENT_SOFT));
+            Ui.ProgressLine line = new Ui.ProgressLine(ctx);
+            line.set(RealtimeModels.importPercent());
+            liveBody.addView(line, Ui.margins(Ui.lp(-1, dp(4)), ctx, 0, 10, 0, 0));
+            return;
+        }
+        java.util.List<String> languages = new RealtimeModels(ctx).installedLanguages();
+        if (languages.isEmpty()) {
+            liveBody.addView(Ui.text(ctx, "Не подключены", 14, Palette.ORANGE));
+            liveBody.addView(Ui.text(ctx, "Нужны для режима Real-life: текст появляется во время записи. "
+                    + "Выберите папку, где лежат sherpa-ru, sherpa-en и silero_vad.onnx.", 12, Palette.MUTED),
+                    Ui.margins(Ui.lp(-1, -2), ctx, 0, 6, 0, 0));
+        } else {
+            StringBuilder names = new StringBuilder();
+            for (String language : languages) {
+                if (names.length() > 0) names.append(", ");
+                names.append(language.equals("en") ? "English" : "Русский");
+            }
+            liveBody.addView(Ui.text(ctx, "Подключены · " + names, 14, Palette.GREEN));
+        }
+        String error = RealtimeModels.importError();
+        if (!error.isEmpty()) {
+            liveBody.addView(Ui.text(ctx, error, 12, Palette.RED), Ui.margins(Ui.lp(-1, -2), ctx, 0, 8, 0, 0));
+        }
+        liveBody.addView(Ui.primaryButton(ctx, languages.isEmpty() ? "Выбрать папку с моделями" : "Обновить из папки",
+                v -> host.pickRealtimeModels()), Ui.margins(Ui.lp(-1, -2), ctx, 0, 14, 0, 0));
     }
 
     private String sizeOnDisk() {

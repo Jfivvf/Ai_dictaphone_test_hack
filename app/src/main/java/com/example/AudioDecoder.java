@@ -89,6 +89,26 @@ final class AudioDecoder {
         }
     }
 
+    /** Звук, записанный самим приложением (WAV PCM16, 16 кГц, моно): без перекодирования копируется в сырой файл. */
+    static Pcm fromWav(File wav, File out) throws IOException {
+        final int header = 44;
+        long dataBytes = wav.length() - header;
+        if (dataBytes <= 0) throw new IOException("В записи нет звука");
+        try (java.io.InputStream in = new java.io.BufferedInputStream(new java.io.FileInputStream(wav));
+             java.io.OutputStream os = new java.io.BufferedOutputStream(new java.io.FileOutputStream(out))) {
+            long skipped = 0;
+            while (skipped < header) {
+                long n = in.skip(header - skipped);
+                if (n <= 0) throw new IOException("Повреждённый заголовок записи");
+                skipped += n;
+            }
+            byte[] buffer = new byte[1 << 16];
+            int n;
+            while ((n = in.read(buffer)) >= 0) os.write(buffer, 0, n);
+        }
+        return new Pcm(out, dataBytes / 2, TARGET_RATE, 1f);
+    }
+
     /** Декодирует аудио из файла в {@code out} (сырой PCM 16 бит, 16 кГц, моно). */
     static Pcm decodeToPcm(String path, File out) throws IOException {
         MediaExtractor extractor = new MediaExtractor();

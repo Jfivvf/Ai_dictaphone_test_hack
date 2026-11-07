@@ -94,4 +94,38 @@ public class TaskDetectorTest {
         assertEquals(1, tasks.size());
         assertTrue(tasks.get(0).deadline.contains("конца недели"));
     }
+
+    @Test
+    public void textWithoutPunctuationIsSplitAndJudged() {
+        List<Segment> segments = new ArrayList<>();
+        segments.add(Segment.of(0, 9000, 0, "так сейчас проверим другие стороны этой точки зрения надо подумать над этим "
+                + "нужно сделать проект к пятнице нужно сделать домашнее задание"));
+        List<Task> tasks = TaskDetector.detect(segments);
+        assertEquals(tasks.toString(), 2, tasks.size());
+        assertEquals("Нужно сделать проект к пятнице", tasks.get(0).text);
+        assertEquals("Нужно сделать домашнее задание", tasks.get(1).text);
+    }
+
+    @Test
+    public void executorChangeWithoutPunctuation() {
+        List<Segment> segments = new ArrayList<>();
+        segments.add(Segment.of(0, 9000, 0, "ну договорились петя пришлёт договор до конца дня а я позвоню клиенту завтра"));
+        List<Task> tasks = TaskDetector.detect(segments);
+        assertEquals(tasks.toString(), 2, tasks.size());
+    }
+
+    @Test
+    public void lowercaseDiscussionIsNotATask() {
+        String[] phrases = {
+                "сейчас проверим другие стороны этой точки зрения",
+                "надо подумать над этим",
+                "так надо подумать над этим а потом сейчас посмотрим что получится",
+                "здесь нужно учитывать начальные условия"
+        };
+        for (String phrase : phrases) {
+            List<Segment> segments = new ArrayList<>();
+            segments.add(Segment.of(0, 5000, 0, phrase));
+            assertEquals(phrase, 0, TaskDetector.detect(segments).size());
+        }
+    }
 }
