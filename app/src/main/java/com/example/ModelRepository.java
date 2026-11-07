@@ -24,6 +24,9 @@ final class ModelRepository {
     private static final String WHISPER = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.tar.bz2";
     private static final String SEGMENT = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2";
     private static final String EMBED = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx";
+    /** Небольшая модель шумоподавления GTCRN; качается только если включено шумоподавление. */
+    private static final String DENOISE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx";
+    private static final long DENOISE_BYTES = 535638L;
 
     interface Progress {
         void onProgress(String label, int percent);
@@ -57,6 +60,7 @@ final class ModelRepository {
     private File tokensFile() { return new File(root, "whisper/small-tokens.txt"); }
     private File segmentationFile() { return new File(root, "diarization/segmentation.onnx"); }
     private File embeddingFile() { return new File(root, "diarization/embedding.onnx"); }
+    private File denoiserFile() { return new File(root, "denoise/gtcrn_simple.onnx"); }
 
     boolean installed() {
         return encoderFile().isFile() && decoderFile().isFile() && tokensFile().isFile()
@@ -97,6 +101,15 @@ final class ModelRepository {
             throw new IOException("Загрузка моделей завершилась не полностью");
         }
         return new Models(enc, dec, tok, seg, emb);
+    }
+
+    /** Блокирующий вызов: скачивает модель шумоподавления при первом использовании и возвращает путь к ней. */
+    File ensureDenoiser(Progress progress) throws Exception {
+        File file = denoiserFile();
+        file.getParentFile().mkdirs();
+        if (!file.isFile()) download(DENOISE, file, "Загрузка модели шумоподавления", DENOISE_BYTES, progress);
+        if (!file.isFile()) throw new IOException("Не удалось загрузить модель шумоподавления");
+        return file;
     }
 
     private void download(String url, File target, String label, long expectedBytes, Progress progress) throws Exception {
