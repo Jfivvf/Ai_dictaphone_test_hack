@@ -4,6 +4,7 @@ import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 
 import java.io.IOException;
@@ -19,6 +20,20 @@ final class AudioDecoder {
         AudioData(float[] samples, int sampleRate) {
             this.samples = samples;
             this.sampleRate = sampleRate;
+        }
+    }
+
+    /** Длительность файла по метаданным; 0, если определить не удалось. */
+    static long durationMs(String path) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(path);
+            String value = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            return value == null ? 0 : Long.parseLong(value);
+        } catch (Exception e) {
+            return 0;
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) {}
         }
     }
 
