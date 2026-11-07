@@ -34,12 +34,15 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * Одна запись: расшифровка по репликам с таймкодами, конспект в markdown, плеер и действия над записью.
  * Нажатие на реплику или таймкод переносит воспроизведение к этому месту.
+ * Долгое нажатие на реплику включает выбор: выбранные реплики можно расшифровать заново.
  */
 final class DetailScreen extends BaseScreen {
     private static final int TAB_TRANSCRIPT = 0;
@@ -69,6 +72,12 @@ final class DetailScreen extends BaseScreen {
     private TextView cleanChip;
     private TextView denoiseChip;
     private final SegmentAdapter adapter = new SegmentAdapter();
+
+    // Режим выбора реплик для повторной расшифровки.
+    private boolean selecting = false;
+    private final Set<Integer> selected = new TreeSet<>();
+    private LinearLayout selectionBar;
+    private TextView selectionCount;
 
     private LinearLayout playerBar;
     private FrameLayout playButton;
@@ -187,6 +196,18 @@ final class DetailScreen extends BaseScreen {
         body.addView(noteScroll, new FrameLayout.LayoutParams(-1, -1));
         root.addView(body, Ui.lp(-1, 0, 1f));
 
+        // Панель выбора реплик (видна только в режиме выбора)
+        selectionBar = new LinearLayout(ctx);
+        selectionBar.setGravity(Gravity.CENTER_VERTICAL);
+        selectionBar.setPadding(dp(16), dp(6), dp(6), dp(6));
+        selectionBar.setBackground(Ui.box(ctx, Palette.SURFACE, 16, Palette.BORDER));
+        selectionCount = Ui.text(ctx, "", 14, Palette.TEXT);
+        selectionBar.addView(selectionCount, Ui.lp(0, -2, 1f));
+        selectionBar.addView(barButton("Отмена", Palette.MUTED, v -> stopSelection()));
+        selectionBar.addView(barButton("Заново", Palette.ACCENT_SOFT, v -> retranscribeSelected()));
+        selectionBar.setVisibility(View.GONE);
+        root.addView(selectionBar, Ui.margins(Ui.lp(-1, -2), ctx, 12, 4, 12, 0));
+
         // Плеер
         playerBar = new LinearLayout(ctx);
         playerBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -252,6 +273,9 @@ final class DetailScreen extends BaseScreen {
         metaView.setText(meta);
         renderStatus();
 
+        // Пока идёт обработка, выбор реплик сбрасывается: список не должен меняться под руками.
+        if (selecting && Status.isBusy(fresh.status)) stopSelection();
+
         if (statusChanged || !Status.isBusy(fresh.status)) {
             segments = db.segments(id);
             tasks = db.tasksFor(id);
@@ -310,6 +334,7 @@ final class DetailScreen extends BaseScreen {
     // ---- вкладки и отображение ----------------------------------------------------------------
 
     private void showTab(int index) {
+        if (index != TAB_TRANSCRIPT && selecting) stopSelection();
         tab = index;
         transcriptList.setVisibility(index == TAB_TRANSCRIPT ? View.VISIBLE : View.GONE);
         noteScroll.setVisibility(index == TAB_NOTE ? View.VISIBLE : View.GONE);
@@ -373,18 +398,25 @@ final class DetailScreen extends BaseScreen {
         boolean colored = settings.speakerColors();
         int accent = colored && s.speaker >= 0 ? Palette.speaker(s.speaker) : Palette.MUTED;
         boolean current = position == currentSegment;
+        boolean picked = selecting && selected.contains(s.idx);
 
         FrameLayout wrapper = new FrameLayout(ctx);
         wrapper.setPadding(0, dp(2), 0, dp(2));
 
         LinearLayout row = new LinearLayout(ctx);
         row.setPadding(dp(10), dp(10), dp(4), dp(10));
-        row.setBackground(Ui.ripple(current
+        row.setBackground(Ui.ripple(picked
+                ? Ui.box(ctx, Palette.alpha(Palette.ACCENT, 0x55), 14, Palette.ACCENT)
+                : current
                 ? Ui.box(ctx, Palette.alpha(Palette.ACCENT, 0x2E), 14, Palette.alpha(Palette.ACCENT, 0x80))
                 : Ui.box(ctx, 0, 14)));
-        row.setOnClickListener(v -> playFrom(s.startMs));
+        row.setOnClickListener(v -> {
+            if (selecting) toggleSelected(s.idx);
+            else playFrom(s.startMs);
+        });
         row.setOnLongClickListener(v -> {
-            editSegment(s);
+            if (selecting) toggleSelected(s.idx);
+            else startSelection(s.idx);
             return true;
         });
 
@@ -403,7 +435,10 @@ final class DetailScreen extends BaseScreen {
         stamp.setPadding(dp(8), dp(5), dp(8), dp(5));
         stamp.setBackground(Ui.ripple(Ui.box(ctx, Palette.alpha(Palette.ACCENT, 0x2E), 10)));
         stamp.setContentDescription("Перейти к " + Fmt.stamp(s.startMs));
-        stamp.setOnClickListener(v -> playFrom(s.startMs));
+        stamp.setOnClickListener(v -> {
+            if (selecting) toggleSelected(s.idx);
+            else playFrom(s.startMs);
+        });
         head.addView(stamp, Ui.margins(Ui.lp(-2, -2), ctx, s.speaker >= 0 ? 8 : 0, 0, 0, 0));
         column.addView(head);
         TextView text = Ui.text(ctx, NoteBuilder.text(s, settings.cleanText()), 15, Palette.TEXT);
@@ -411,8 +446,23 @@ final class DetailScreen extends BaseScreen {
         column.addView(text, Ui.margins(Ui.lp(-1, -2), ctx, 0, 5, 0, 0));
         row.addView(column, Ui.margins(Ui.lp(0, -2, 1f), ctx, 12, 0, 4, 0));
 
-        row.addView(Ui.iconButton(ctx, R.drawable.ic_edit, Palette.MUTED, 0, 36, 18, "Править реплику",
-                v -> editSegment(s)));
+        if (selecting) {
+            FrameLayout mark = new FrameLayout(ctx);
+            android.graphics.drawable.GradientDrawable circle = Ui.oval(picked ? Palette.ACCENT : 0);
+            if (!picked) circle.setStroke(dp(2), Palette.MUTED);
+            mark.setBackground(circle);
+            if (picked) {
+                mark.addView(Ui.icon(ctx, R.drawable.ic_check, 0xFFFFFFFF, 16),
+                        new FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER));
+            }
+            LinearLayout.LayoutParams markParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+            markParams.setMargins(dp(6), 0, dp(10), 0);
+            markParams.gravity = Gravity.CENTER_VERTICAL;
+            row.addView(mark, markParams);
+        } else {
+            row.addView(Ui.iconButton(ctx, R.drawable.ic_edit, Palette.MUTED, 0, 36, 18, "Править реплику",
+                    v -> editSegment(s)));
+        }
         wrapper.addView(row, new FrameLayout.LayoutParams(-1, -2));
         return wrapper;
     }
@@ -424,6 +474,76 @@ final class DetailScreen extends BaseScreen {
         @Override public View getView(int position, View convertView, ViewGroup parent) {
             return row(position);
         }
+    }
+
+    // ---- выбор реплик -------------------------------------------------------------------------
+
+    private TextView barButton(String label, int color, View.OnClickListener click) {
+        TextView t = Ui.bold(ctx, label, 14, color);
+        t.setPadding(dp(12), dp(10), dp(12), dp(10));
+        t.setBackground(Ui.ripple(Ui.box(ctx, 0, 12)));
+        t.setOnClickListener(click);
+        return t;
+    }
+
+    /** Включает режим выбора; idx ≥ 0 — сразу отметить эту реплику. */
+    private void startSelection(int idx) {
+        if (recording == null) return;
+        if (Status.isBusy(recording.status)) {
+            host.toast("Дождитесь окончания расшифровки");
+            return;
+        }
+        if (tab != TAB_TRANSCRIPT) {
+            tabs.select(TAB_TRANSCRIPT);
+            showTab(TAB_TRANSCRIPT);
+        }
+        selecting = true;
+        selected.clear();
+        if (idx >= 0) selected.add(idx);
+        updateSelection();
+    }
+
+    private void toggleSelected(int idx) {
+        if (!selected.remove(idx)) selected.add(idx);
+        updateSelection();
+    }
+
+    private void stopSelection() {
+        selecting = false;
+        selected.clear();
+        updateSelection();
+    }
+
+    /** Возвращает true, если нажатие «Назад» потрачено на выход из режима выбора. */
+    boolean handleBack() {
+        if (!selecting) return false;
+        stopSelection();
+        return true;
+    }
+
+    private void updateSelection() {
+        selectionBar.setVisibility(selecting ? View.VISIBLE : View.GONE);
+        selectionCount.setText(selected.isEmpty() ? "Выберите реплики" : "Выбрано: " + selected.size());
+        adapter.notifyDataSetChanged();
+    }
+
+    private void retranscribeSelected() {
+        if (selected.isEmpty()) {
+            host.toast("Выберите хотя бы одну реплику");
+            return;
+        }
+        final int[] indexes = new int[selected.size()];
+        int k = 0;
+        for (int i : selected) indexes[k++] = i;
+        Ui.dialog(ctx).setTitle("Расшифровать заново?")
+                .setMessage("Текст выбранных реплик (" + indexes.length + ") будет заменён новой расшифровкой, "
+                        + "включая ваши правки. Время и говорящие сохранятся.")
+                .setPositiveButton("Расшифровать", (d, w) -> {
+                    stopSelection();
+                    host.transcribeFragments(id, indexes);
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
     }
 
     // ---- плеер --------------------------------------------------------------------------------
@@ -584,7 +704,7 @@ final class DetailScreen extends BaseScreen {
         currentSegment = index;
         adapter.notifyDataSetChanged();
         boolean idle = SystemClock.uptimeMillis() - lastTouch > 4000;
-        if (index >= 0 && playing && idle && tab == TAB_TRANSCRIPT) {
+        if (index >= 0 && playing && idle && tab == TAB_TRANSCRIPT && !selecting) {
             transcriptList.smoothScrollToPositionFromTop(index, dp(60));
         }
     }
@@ -595,14 +715,17 @@ final class DetailScreen extends BaseScreen {
         PopupMenu menu = new PopupMenu(ctx, anchor);
         menu.getMenu().add(0, 1, 0, "Переименовать");
         if (!NoteBuilder.speakersInOrder(segments).isEmpty()) menu.getMenu().add(0, 2, 1, "Имена говорящих");
-        if (!segments.isEmpty()) {
-            menu.getMenu().add(0, 3, 2, "Сохранить PDF");
-            menu.getMenu().add(0, 4, 3, "Сохранить markdown");
-            menu.getMenu().add(0, 5, 4, "Копировать конспект");
-            menu.getMenu().add(0, 8, 5, "Сохранить JSON");
+        if (!segments.isEmpty() && recording != null && !Status.isBusy(recording.status)) {
+            menu.getMenu().add(0, 9, 2, "Выбрать реплики");
         }
-        if (recording != null && !Status.isBusy(recording.status)) menu.getMenu().add(0, 6, 5, "Расшифровать заново");
-        menu.getMenu().add(0, 7, 6, "Удалить");
+        if (!segments.isEmpty()) {
+            menu.getMenu().add(0, 3, 3, "Сохранить PDF");
+            menu.getMenu().add(0, 4, 4, "Сохранить markdown");
+            menu.getMenu().add(0, 5, 5, "Копировать конспект");
+            menu.getMenu().add(0, 8, 6, "Сохранить JSON");
+        }
+        if (recording != null && !Status.isBusy(recording.status)) menu.getMenu().add(0, 6, 7, "Расшифровать заново");
+        menu.getMenu().add(0, 7, 8, "Удалить");
         menu.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 1: rename(); return true;
@@ -613,6 +736,7 @@ final class DetailScreen extends BaseScreen {
                 case 6: retranscribe(); return true;
                 case 7: host.confirmDelete(recording); return true;
                 case 8: host.exportJson(id); return true;
+                case 9: startSelection(-1); return true;
                 default: return false;
             }
         });
