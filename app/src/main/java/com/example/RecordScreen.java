@@ -15,13 +15,12 @@ import androidx.core.content.ContextCompat;
 
 import java.util.Locale;
 
-/** Экран записи: уровень сигнала, таймер, управление и предварительная настройка звука. */
+/** Экран записи: уровень сигнала, таймер, управление и выбор режима записи. */
 final class RecordScreen extends BaseScreen implements RecordingService.Listener {
-    private static final int[] BITRATES = {64000, 128000, 256000};
-    private static final String[] SOURCE_HINTS = {
-            "Настроен под голос, подавляет фоновый шум",
-            "Обычный микрофон телефона",
-            "Звук как есть, без шумоподавления и автоусиления"
+    private static final String[] MODE_HINTS = {
+            "Звук без обработки телефона, максимум деталей. Лучше всего в тихой комнате",
+            "Компактные файлы и быстрая обработка. Для чёткой речи рядом с микрофоном",
+            "Для шумных мест: подавление шума при записи и перед расшифровкой"
     };
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -37,9 +36,8 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
     private Ui.Waveform wave;
     private FrameLayout recordButton;
     private FrameLayout pauseButton;
-    private Ui.Segmented sourceChoice;
-    private Ui.Segmented bitrateChoice;
-    private TextView sourceHint;
+    private Ui.Segmented modeChoice;
+    private TextView modeHint;
     private TextView sizeHint;
     private int lastState = RecordingService.STATE_IDLE;
 
@@ -117,7 +115,7 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
         card.addView(errorText, Ui.margins(Ui.lp(-1, -2), ctx, 0, 14, 0, 0));
         page.addView(card);
 
-        // Предварительная настройка звука
+        // Настройка звука
         page.addView(Ui.space(ctx, 16));
         LinearLayout preset = Ui.card(ctx);
         LinearLayout head = new LinearLayout(ctx);
@@ -127,25 +125,19 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
                 Ui.margins(Ui.lp(-2, -2), ctx, 10, 0, 0, 0));
         preset.addView(head);
 
-        preset.addView(Ui.text(ctx, "Источник", 12, Palette.MUTED), Ui.margins(Ui.lp(-2, -2), ctx, 0, 16, 0, 8));
-        sourceChoice = new Ui.Segmented(ctx, new String[]{"Речь", "Микрофон", "Без обработки"},
-                settings.audioSource(), index -> {
-            settings.setAudioSource(index);
-            sourceHint.setText(SOURCE_HINTS[index]);
+        preset.addView(Ui.text(ctx, "Режим", 12, Palette.MUTED), Ui.margins(Ui.lp(-2, -2), ctx, 0, 16, 0, 8));
+        modeChoice = new Ui.Segmented(ctx, new String[]{"Точный", "Быстрый", "Real-life"},
+                settings.recordMode(), index -> {
+            settings.setRecordMode(index);
+            modeHint.setText(MODE_HINTS[index]);
+            sizeHint.setText(sizeText(settings.bitrate()));
         });
-        preset.addView(sourceChoice);
-        sourceHint = Ui.text(ctx, SOURCE_HINTS[settings.audioSource()], 12, Palette.MUTED);
-        preset.addView(sourceHint, Ui.margins(Ui.lp(-2, -2), ctx, 2, 8, 0, 0));
-
-        preset.addView(Ui.text(ctx, "Качество", 12, Palette.MUTED), Ui.margins(Ui.lp(-2, -2), ctx, 0, 16, 0, 8));
-        bitrateChoice = new Ui.Segmented(ctx, new String[]{"64 кбит/с", "128 кбит/с", "256 кбит/с"},
-                bitrateIndex(settings.bitrate()), index -> {
-            settings.setBitrate(BITRATES[index]);
-            sizeHint.setText(sizeText(BITRATES[index]));
-        });
-        preset.addView(bitrateChoice);
+        preset.addView(modeChoice);
+        modeHint = Ui.text(ctx, MODE_HINTS[settings.recordMode()], 12, Palette.MUTED);
+        modeHint.setLineSpacing(dp(1), 1f);
+        preset.addView(modeHint, Ui.margins(Ui.lp(-1, -2), ctx, 2, 8, 0, 0));
         sizeHint = Ui.text(ctx, sizeText(settings.bitrate()), 12, Palette.MUTED);
-        preset.addView(sizeHint, Ui.margins(Ui.lp(-2, -2), ctx, 2, 8, 0, 0));
+        preset.addView(sizeHint, Ui.margins(Ui.lp(-2, -2), ctx, 2, 4, 0, 0));
 
         LinearLayout autoRow = new LinearLayout(ctx);
         autoRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -169,11 +161,6 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
         col.addView(top);
         col.addView(label, Ui.margins(Ui.lp(-2, -2), ctx, 0, 8, 0, 0));
         return col;
-    }
-
-    private static int bitrateIndex(int bitrate) {
-        for (int i = 0; i < BITRATES.length; i++) if (BITRATES[i] == bitrate) return i;
-        return 1;
     }
 
     private static String sizeText(int bitrate) {
@@ -233,8 +220,7 @@ final class RecordScreen extends BaseScreen implements RecordingService.Listener
         pauseButton.setEnabled(!idle);
         pauseButton.setAlpha(idle ? 0.35f : 1f);
 
-        sourceChoice.setEnabled(idle);
-        bitrateChoice.setEnabled(idle);
+        modeChoice.setEnabled(idle);
 
         ui.removeCallbacks(tick);
         if (idle) {
