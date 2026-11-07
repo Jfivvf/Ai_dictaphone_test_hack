@@ -130,6 +130,8 @@ public class MainActivity extends ComponentActivity {
 
         backCallback = new OnBackPressedCallback(false) {
             @Override public void handleOnBackPressed() {
+                // Сначала выходим из режима выбора реплик, и только потом закрываем запись.
+                if (detail != null && detail.handleBack()) return;
                 closeDetail();
             }
         };
@@ -378,6 +380,16 @@ public class MainActivity extends ComponentActivity {
         askNotifications();
         try {
             TranscriptionService.enqueue(this, recordingId);
+        } catch (RuntimeException e) {
+            toast("Не удалось запустить расшифровку: " + e.getMessage());
+        }
+    }
+
+    /** Повторно расшифровывает только выбранные реплики (по idx); время и говорящие сохраняются. */
+    void transcribeFragments(long recordingId, int[] indexes) {
+        askNotifications();
+        try {
+            TranscriptionService.enqueueFragments(this, recordingId, indexes);
         } catch (RuntimeException e) {
             toast("Не удалось запустить расшифровку: " + e.getMessage());
         }
