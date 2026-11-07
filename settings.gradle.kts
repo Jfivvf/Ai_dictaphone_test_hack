@@ -23,6 +23,8 @@ dependencyResolutionManagement {
       }
     }
     mavenCentral()
+    // Локальный каталог для Sherpa-ONNX AAR: AGP не принимает AAR через files(...).
+    flatDir { dirs("app/libs") }
   }
 }
 

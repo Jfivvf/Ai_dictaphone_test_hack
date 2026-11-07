@@ -73,7 +73,7 @@ android {
 dependencies {
     implementation("androidx.core:core:1.18.0")
     implementation("androidx.activity:activity:1.13.0")
-    implementation(files(sherpaAar))
+    implementation(":sherpa-onnx-2.0.1@aar")
     implementation("org.apache.commons:commons-compress:1.27.1")
 
     testImplementation(libs.junit)
