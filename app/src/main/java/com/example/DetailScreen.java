@@ -37,7 +37,10 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-
+/**
+ * Одна запись: расшифровка по репликам с таймкодами, конспект в markdown, плеер и действия над записью.
+ * Нажатие на реплику или таймкод переносит воспроизведение к этому месту.
+ */
 final class DetailScreen extends BaseScreen {
     private static final int TAB_TRANSCRIPT = 0;
     private static final int TAB_NOTE = 1;
@@ -51,7 +54,7 @@ final class DetailScreen extends BaseScreen {
     private List<Segment> segments = new ArrayList<>();
     private List<Task> tasks = new ArrayList<>();
     private int tab = TAB_TRANSCRIPT;
-    private TextView denoiseChip;
+
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LinearLayout root;
     private TextView titleView;
@@ -64,6 +67,7 @@ final class DetailScreen extends BaseScreen {
     private TextView noteText;
     private TextView colorChip;
     private TextView cleanChip;
+    private TextView denoiseChip;
     private final SegmentAdapter adapter = new SegmentAdapter();
 
     private LinearLayout playerBar;
@@ -134,6 +138,7 @@ final class DetailScreen extends BaseScreen {
         tabs = new Ui.Segmented(ctx, new String[]{"Расшифровка", "Конспект"}, tab, this::showTab);
         root.addView(tabs, Ui.margins(Ui.lp(-1, -2), ctx, 16, 12, 16, 0));
 
+        // Чипы настроек: каждый view добавляется ровно один раз, весь ряд прокручивается по горизонтали.
         LinearLayout options = new LinearLayout(ctx);
         colorChip = Ui.toggleChip(ctx, "Цвета говорящих", settings.speakerColors(), v -> {
             settings.setSpeakerColors(!settings.speakerColors());
@@ -153,10 +158,6 @@ final class DetailScreen extends BaseScreen {
         optionsScroll.setHorizontalScrollBarEnabled(false);
         optionsScroll.addView(options);
         root.addView(optionsScroll, Ui.margins(Ui.lp(-1, -2), ctx, 16, 10, 16, 0));
-        
-        options.addView(colorChip);
-        options.addView(cleanChip, Ui.margins(Ui.lp(-2, -2), ctx, 8, 0, 0, 0));
-        root.addView(options, Ui.margins(Ui.lp(-2, -2), ctx, 16, 10, 16, 0));
 
         body = new FrameLayout(ctx);
         transcriptList = new ListView(ctx);
@@ -640,15 +641,14 @@ final class DetailScreen extends BaseScreen {
         settings.setDenoise(on);
         Ui.styleToggleChip(ctx, denoiseChip, on);
         if (recording == null || segments.isEmpty() || Status.isBusy(recording.status)) return;
-            Ui.dialog(ctx).setTitle(on ? "Включить шумоподавление?" : "Выключить шумоподавление?")
-                    .setMessage("Шумоподавление работает со звуком до расшифровки. Чтобы оно применилось к этой записи, "
-                            + "нужно расшифровать её заново: правки в репликах и имена говорящих будут заменены.")
-                    .setPositiveButton("Расшифровать заново", (d, w) -> host.transcribe(id))
-                    .setNegativeButton("Позже", null)
-                    .show();
+        Ui.dialog(ctx).setTitle(on ? "Включить шумоподавление?" : "Выключить шумоподавление?")
+                .setMessage("Шумоподавление работает со звуком до расшифровки. Чтобы оно применилось к этой записи, "
+                        + "нужно расшифровать её заново: правки в репликах и имена говорящих будут заменены.")
+                .setPositiveButton("Расшифровать заново", (d, w) -> host.transcribe(id))
+                .setNegativeButton("Позже", null)
+                .show();
     }
 
-    
     private void copyNote() {
         String markdown = NoteBuilder.markdown(recording, segments, tasks, settings.cleanText());
         ClipboardManager clipboard = (ClipboardManager) ctx.getSystemService(Context.CLIPBOARD_SERVICE);
