@@ -1,602 +1,571 @@
 package com.example;
 
 import android.Manifest;
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.graphics.Paint;
-import android.graphics.Typeface;
-import android.graphics.pdf.PdfDocument;
-import android.media.MediaPlayer;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.activity.ComponentActivity;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
+/**
+ * Оболочка приложения: четыре раздела с нижней навигацией и экран записи поверх них.
+ * Здесь же всё, что требует системных окон: права, выбор файлов, сохранение PDF и markdown.
+ */
 public class MainActivity extends ComponentActivity {
-    private static final int REQUEST_AUDIO_PERMISSION = 701;
-    private RecordingDb database;
+    private static final int TAB_RECORD = 0;
+    private static final int TAB_LIBRARY = 1;
+    private static final int TAB_TASKS = 2;
+    private static final int TAB_SETTINGS = 3;
+
+    private static final String[] TAB_LABELS = {"Запись", "Записи", "Задачи", "Настройки"};
+    private static final int[] TAB_ICONS = {R.drawable.ic_mic, R.drawable.ic_list, R.drawable.ic_tasks,
+            R.drawable.ic_settings};
+
+    private RecordingDb db;
+    private Settings settings;
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+
+    private BaseScreen[] screens;
+    private RecordScreen recordScreen;
+    private DetailScreen detail;
+    private int tab = -1;
+    private boolean imeShown = false;
+
     private LinearLayout root;
-    private LinearLayout library;
-    private LinearLayout segmentList;
-    private MediaPlayer audioPlayer;
-    private EditText transcriptEditor;
-    private TextView selectedTitle;
-    private TextView statusText;
-    private RecordingDb.Recording selected;
-    private boolean recording = false;
-    private ModelRepository modelRepository;
-    private ExecutorService transcriptionExecutor;
-    private Handler ui = new Handler(Looper.getMainLooper());
-    private Button transcribeButton;
-    private Button recordButton;
-    private Button pauseButton;
-    private TextView levelText;
-    private ProgressBar levelBar;
-    private TextView elapsedText;
-    private long recordingStartedAt;
-    private long pausedAt;
-    private long pausedTotalMs;
-    private boolean recordingPaused = false;
-    private long processingStartedAt;
-    private final Runnable recordingTicker = new Runnable() {
-        @Override public void run() {
-            if (!recording || elapsedText == null) return;
-            long end = recordingPaused ? pausedAt : System.currentTimeMillis();
-            long elapsed = Math.max(0, end - recordingStartedAt - pausedTotalMs) / 1000;
-            elapsedText.setText(String.format(Locale.ROOT, "%02d:%02d", elapsed / 60, elapsed % 60));
-            ui.postDelayed(this, 1000);
-        }
-    };
-    private final Runnable processingTicker = new Runnable() {
-        @Override public void run() {
-            if (processingStartedAt == 0) return;
-            long elapsed = (System.currentTimeMillis() - processingStartedAt) / 1000;
-            setStatus("Локальное распознавание и диаризация · " + elapsed + " с");
-            ui.postDelayed(this, 1000);
-        }
+    private FrameLayout contentFrame;
+    private FrameLayout detailFrame;
+    private LinearLayout navBar;
+    private LinearLayout navRow;
+    private FrameLayout[] navPills;
+    private ImageView[] navIcons;
+    private TextView[] navLabels;
+    private OnBackPressedCallback backCallback;
+
+    private Runnable afterPermission;
+    private long exportTarget = -1;
+
+    private final RecordingDb.Listener dbListener = recordingId -> {
+        if (screens != null) for (BaseScreen screen : screens) screen.onDataChanged(recordingId);
+        if (detail != null) detail.onDataChanged(recordingId);
     };
 
-    private final ActivityResultLauncher<String[]> importAudio =
-            registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::importSelectedAudio);
-    private final ActivityResultLauncher<String> exportPdf =
-            registerForActivityResult(new ActivityResultContracts.CreateDocument("application/pdf"), this::writePdf);
-
-    private final BroadcastReceiver recordingReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context context, Intent intent) {
-            String action = intent.getAction();
-            if (RecordingService.ACTION_FINISHED.equals(action)) {
-                String path = intent.getStringExtra(RecordingService.EXTRA_PATH);
-                if (path != null) {
-                    String title = "Запись " + new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(new Date());
-                    database.add(title, path, "Записано");
-                    setStatus("Запись сохранена");
-                    refreshLibrary();
+    private final ActivityResultLauncher<String[]> permissionLauncher =
+            registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), result -> {
+                Runnable next = afterPermission;
+                afterPermission = null;
+                if (Boolean.TRUE.equals(result.get(Manifest.permission.RECORD_AUDIO))) {
+                    if (next != null) next.run();
+                } else {
+                    toast("Для записи нужен доступ к микрофону");
                 }
-                recording = false;
-                recordingPaused = false;
-                pausedTotalMs = 0;
-                ui.removeCallbacks(recordingTicker);
-                updateRecordButton();
-                if (pauseButton != null) { pauseButton.setEnabled(false); pauseButton.setText("Пауза"); }
-                if (elapsedText != null) elapsedText.setText("00:00");
-            } else if (RecordingService.ACTION_LEVEL.equals(action)) {
-                updateLevel(intent.getDoubleExtra(RecordingService.EXTRA_DB, -60.0));
-            } else if (RecordingService.ACTION_FAILED.equals(action)) {
-                recording = false;
-                recordingPaused = false;
-                ui.removeCallbacks(recordingTicker);
-                updateRecordButton();
-                if (pauseButton != null) { pauseButton.setEnabled(false); pauseButton.setText("Пауза"); }
-                setStatus(intent.getStringExtra("error"));
-            }
-        }
-    };
+            });
+    private final ActivityResultLauncher<String> notificationLauncher =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> { });
+    private final ActivityResultLauncher<String[]> importLauncher =
+            registerForActivityResult(new ActivityResultContracts.OpenMultipleDocuments(), this::importFiles);
+    private final ActivityResultLauncher<String> pdfLauncher =
+            registerForActivityResult(new ActivityResultContracts.CreateDocument("application/pdf"),
+                    uri -> writeExport(uri, true));
+    private final ActivityResultLauncher<String> markdownLauncher =
+            registerForActivityResult(new ActivityResultContracts.CreateDocument("text/markdown"),
+                    uri -> writeExport(uri, false));
+
+    // ---- создание -----------------------------------------------------------------------------
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        database = new RecordingDb(this);
-        modelRepository = new ModelRepository(this);
-        transcriptionExecutor = Executors.newSingleThreadExecutor();
-        buildInterface();
-        refreshLibrary();
+        db = RecordingDb.get(this);
+        settings = new Settings(this);
 
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(RecordingService.ACTION_FINISHED);
-        filter.addAction(RecordingService.ACTION_FAILED);
-        filter.addAction(RecordingService.ACTION_LEVEL);
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(recordingReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        else registerReceiver(recordingReceiver, filter);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView()).setAppearanceLightStatusBars(false);
+
+        recordScreen = new RecordScreen(this);
+        screens = new BaseScreen[]{recordScreen, new LibraryScreen(this), new TasksScreen(this),
+                new SettingsScreen(this)};
+        buildShell();
+        RecordingDb.addListener(dbListener);
+
+        backCallback = new OnBackPressedCallback(false) {
+            @Override public void handleOnBackPressed() {
+                closeDetail();
+            }
+        };
+        getOnBackPressedDispatcher().addCallback(this, backCallback);
+
+        showTab(state == null ? TAB_RECORD : state.getInt("tab", TAB_RECORD));
+        if (state != null) {
+            long open = state.getLong("open", -1);
+            if (open >= 0) openRecording(open);
+        } else {
+            handleIntent(getIntent());
+            offerModelDownload();
+        }
     }
 
-    private void buildInterface() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
+    private void buildShell() {
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(24), dp(20), dp(28));
-        root.setBackgroundColor(0xFF0B0D12);
-        scroll.addView(root);
-        setContentView(scroll);
+        root.setBackgroundColor(Palette.BG);
 
-        TextView heading = new TextView(this);
-        heading.setText("AudioVault");
-        heading.setTextSize(28);
-        heading.setTextColor(0xFFF5F5FA);
-        heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        root.addView(heading);
-
-        statusText = new TextView(this);
-        statusText.setText("Готово");
-        statusText.setTextSize(13);
-        statusText.setTextColor(0xFFB6BBC9);
-        statusText.setPadding(0, dp(6), 0, dp(16));
-        root.addView(statusText);
-
-        TextView levelLabel = new TextView(this);
-        levelLabel.setText("УРОВЕНЬ МИКРОФОНА");
-        levelLabel.setTextColor(0xFF9B8CFF);
-        levelLabel.setTextSize(11);
-        root.addView(levelLabel);
-        levelText = new TextView(this);
-        levelText.setText("−60 dBFS");
-        levelText.setTextColor(0xFFE4E1FF);
-        levelText.setTextSize(14);
-        root.addView(levelText);
-        levelBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        levelBar.setMax(60);
-        levelBar.setProgress(0);
-        root.addView(levelBar, new LinearLayout.LayoutParams(-1, dp(12)));
-        elapsedText = new TextView(this);
-        elapsedText.setText("00:00");
-        elapsedText.setTextColor(0xFFFFFFFF);
-        elapsedText.setTextSize(24);
-        elapsedText.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        root.addView(elapsedText);
-
-        recordButton = button("Начать запись");
-        recordButton.setOnClickListener(v -> toggleRecording());
-        recordButton.setBackgroundColor(0xFFE32662);
-        recordButton.setTextColor(0xFFFFFFFF);
-        root.addView(recordButton);
-        pauseButton = button("Пауза");
-        pauseButton.setEnabled(false);
-        pauseButton.setOnClickListener(v -> togglePauseRecording());
-        root.addView(pauseButton);
-        Button importButton = button("Импортировать аудио");
-        importButton.setOnClickListener(v -> importAudio.launch(new String[]{"audio/*"}));
-        root.addView(importButton);
-
-        TextView libraryTitle = sectionTitle("Записи");
-        root.addView(libraryTitle);
-        library = new LinearLayout(this);
-        library.setOrientation(LinearLayout.VERTICAL);
-        root.addView(library);
-
-        selectedTitle = sectionTitle("Расшифровка");
-        root.addView(selectedTitle);
-        transcriptEditor = new EditText(this);
-        transcriptEditor.setMinLines(8);
-        transcriptEditor.setTextColor(0xFFE9EAF1);
-        transcriptEditor.setHintTextColor(0xFF777E8D);
-        transcriptEditor.setBackgroundColor(0xFF171B24);
-        transcriptEditor.setGravity(Gravity.TOP | Gravity.START);
-        transcriptEditor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        transcriptEditor.setHint("Текст расшифровки");
-        root.addView(transcriptEditor, new LinearLayout.LayoutParams(-1, dp(220)));
-        segmentList = new LinearLayout(this);
-        segmentList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(segmentList);
-
-        Button saveText = button("Сохранить текст");
-        saveText.setOnClickListener(v -> saveTranscript());
-        root.addView(saveText);
-        Button pdfButton = button("Экспортировать PDF");
-        pdfButton.setOnClickListener(v -> {
-            if (selected == null) { setStatus("Сначала выберите запись"); return; }
-            exportPdf.launch(safeFileName(selected.title) + ".pdf");
-        });
-        root.addView(pdfButton);
-        transcribeButton = button("Расшифровать и определить говорящих");
-        transcribeButton.setOnClickListener(v -> transcribeSelected());
-        root.addView(transcribeButton);
-    }
-
-    private void transcribeSelected() {
-        if (selected == null) {
-            setStatus("Сначала выберите аудиозапись");
-            return;
+        FrameLayout stack = new FrameLayout(this);
+        contentFrame = new FrameLayout(this);
+        for (BaseScreen screen : screens) {
+            screen.view().setVisibility(View.GONE);
+            contentFrame.addView(screen.view(), new FrameLayout.LayoutParams(-1, -1));
         }
-        final RecordingDb.Recording recordingToProcess = selected;
-        File audio = new File(recordingToProcess.audioPath);
-        if (!audio.isFile()) {
-            setStatus("Исходный аудиофайл не найден");
-            return;
-        }
-        transcribeButton.setEnabled(false);
-        database.updateStatus(recordingToProcess.id, "Подготовка моделей");
-        refreshLibrary();
-        setStatus("Подготовка локальных моделей…");
-        modelRepository.prepare(new ModelRepository.Callback() {
-            @Override public void progress(String label, int percent) {
-                setStatus(percent >= 0 ? label + " · " + percent + "%" : label);
-            }
+        stack.addView(contentFrame, new FrameLayout.LayoutParams(-1, -1));
+        detailFrame = new FrameLayout(this);
+        detailFrame.setVisibility(View.GONE);
+        stack.addView(detailFrame, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(stack, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-            @Override public void ready(File encoder, File decoder, File tokens,
-                                        File segmentation, File embedding) {
-                setStatus("Декодирование аудио…");
-                final String audioPath = recordingToProcess.audioPath;
-                final long recordingId = recordingToProcess.id;
-                transcriptionExecutor.execute(() -> {
-                    try {
-                        AudioDecoder.AudioData data = AudioDecoder.decode(MainActivity.this, audioPath);
-                        processingStartedAt = System.currentTimeMillis();
-                        ui.post(() -> {
-                            setStatus("Распознавание речи и диаризация…");
-                            ui.removeCallbacks(processingTicker);
-                            ui.post(processingTicker);
-                        });
-                        LocalTranscriptionEngine.Result result = LocalTranscriptionEngine.process(
-                                data, encoder, decoder, tokens, segmentation, embedding, "ru",
-                                Math.max(2, Runtime.getRuntime().availableProcessors() - 1));
-                        StringBuilder formatted = new StringBuilder();
-                        for (LocalTranscriptionEngine.Segment segment : result.segments) {
-                            formatted.append("[")
-                                    .append(LocalTranscriptionEngine.formatTime(segment.startMs))
-                                    .append(" – ")
-                                    .append(LocalTranscriptionEngine.formatTime(segment.endMs))
-                                    .append("] Спикер ")
-                                    .append(segment.speaker + 1)
-                                    .append(": ")
-                                    .append(segment.text)
-                                    .append("\n\n");
-                        }
-                        String transcript = formatted.length() == 0 ? result.transcript : formatted.toString().trim();
-                        ui.post(() -> {
-                            ui.removeCallbacks(processingTicker);
-                            long processingSeconds = (System.currentTimeMillis() - processingStartedAt) / 1000;
-                            processingStartedAt = 0;
-                            database.updateTranscript(recordingId, transcript);
-                            database.updateStatus(recordingId, result.diarizationError == null ? "Готово" : "Расшифровка готова · нет диаризации");
-                            refreshLibrary();
-                            if (selected != null && selected.id == recordingId) {
-                                selected = new RecordingDb.Recording(selected.id, selected.title,
-                                        selected.audioPath, transcript, selected.createdAt, "Обработано");
-                                transcriptEditor.setText(transcript);
-                                renderTranscriptSegments(transcript);
-                            }
-                            setStatus(result.diarizationError == null
-                                    ? "Расшифровка и диаризация готовы · " + processingSeconds + " с"
-                                    : "Исходная расшифровка сохранена; диаризация не завершилась: " + result.diarizationError);
-                            transcribeButton.setEnabled(true);
-                        });
-                    } catch (Exception e) {
-                        ui.post(() -> {
-                            ui.removeCallbacks(processingTicker);
-                            processingStartedAt = 0;
-                            database.updateStatus(recordingId, "Ошибка");
-                            refreshLibrary();
-                            setStatus("Ошибка обработки: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
-                            transcribeButton.setEnabled(true);
-                        });
-                    }
-                });
-            }
-
-            @Override public void failed(Exception error) {
-                database.updateStatus(recordingToProcess.id, "Ошибка моделей");
-                refreshLibrary();
-                setStatus("Не удалось подготовить модели: " + error.getMessage());
-                transcribeButton.setEnabled(true);
-            }
-        });
-    }
-
-    private void updateLevel(double db) {
-        if (levelText == null || levelBar == null) return;
-        double bounded = Math.max(-60.0, Math.min(0.0, db));
-        levelText.setText(String.format(Locale.getDefault(), "%.0f dBFS", bounded));
-        levelBar.setProgress((int) Math.round(bounded + 60.0));
-    }
-
-    private void togglePauseRecording() {
-        if (!recording) return;
-        if (!recordingPaused) {
-            startService(new Intent(this, RecordingService.class).setAction(RecordingService.ACTION_PAUSE));
-            recordingPaused = true;
-            pausedAt = System.currentTimeMillis();
-            pauseButton.setText("Продолжить");
-            setStatus("Запись приостановлена");
-            updateLevel(-60);
-        } else {
-            startService(new Intent(this, RecordingService.class).setAction(RecordingService.ACTION_RESUME));
-            pausedTotalMs += System.currentTimeMillis() - pausedAt;
-            recordingPaused = false;
-            pauseButton.setText("Пауза");
-            setStatus("Запись продолжается");
-        }
-    }
-
-    private void toggleRecording() {
-        if (!recording) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                    != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_AUDIO_PERMISSION);
-                return;
-            }
-            recording = true;
-            recordingPaused = false;
-            recordingStartedAt = System.currentTimeMillis();
-            pausedTotalMs = 0;
-            ui.removeCallbacks(recordingTicker);
-            ui.post(recordingTicker);
-            updateRecordButton();
-            Intent service = new Intent(this, RecordingService.class).setAction(RecordingService.ACTION_START);
-            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
-            else startService(service);
-            setStatus("Запись выполняется");
-        } else {
-            startService(new Intent(this, RecordingService.class).setAction(RecordingService.ACTION_STOP));
-            setStatus("Сохранение записи…");
-        }
-    }
-
-    private void updateRecordButton() {
-        if (recordButton != null) recordButton.setText(recording ? "Остановить и сохранить" : "Начать запись");
-        if (pauseButton != null) pauseButton.setEnabled(recording && Build.VERSION.SDK_INT >= 24);
-    }
-
-    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
-        super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode == REQUEST_AUDIO_PERMISSION && results.length > 0
-                && results[0] == PackageManager.PERMISSION_GRANTED) toggleRecording();
-        else if (requestCode == REQUEST_AUDIO_PERMISSION) setStatus("Для записи нужен доступ к микрофону");
-    }
-
-    private void importSelectedAudio(Uri uri) {
-        if (uri == null) return;
-        try (InputStream in = getContentResolver().openInputStream(uri)) {
-            if (in == null) throw new IllegalStateException("Не удалось открыть аудиофайл");
-            File dir = new File(getFilesDir(), "recordings");
-            if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Не удалось создать каталог");
-            String name = "import_" + System.currentTimeMillis() + ".audio";
-            File target = new File(dir, name);
-            try (OutputStream out = new FileOutputStream(target)) {
-                byte[] buffer = new byte[8192];
-                int count;
-                while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
-            }
-            database.add(name, target.getAbsolutePath(), "Импортировано");
-            refreshLibrary();
-            setStatus("Файл сохранён локально");
-        } catch (Exception e) {
-            setStatus("Ошибка импорта: " + e.getMessage());
-        }
-    }
-
-    private void refreshLibrary() {
-        library.removeAllViews();
-        List<RecordingDb.Recording> items = database.all();
-        if (items.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("Нет записей");
-            empty.setPadding(0, dp(8), 0, dp(8));
-            library.addView(empty);
-            return;
-        }
-        for (RecordingDb.Recording item : items) {
-            Button row = button(item.title + "  ·  " + item.status);
-            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            row.setOnClickListener(v -> selectRecording(item));
-            library.addView(row);
-        }
-    }
-
-    private void selectRecording(RecordingDb.Recording item) {
-        selected = item;
-        selectedTitle.setText("Расшифровка · " + item.title);
-        transcriptEditor.setText(item.transcript);
-        renderTranscriptSegments(item.transcript);
-        setStatus("Выбрана запись");
-    }
-
-    private void renderTranscriptSegments(String transcript) {
-        if (segmentList == null) return;
-        segmentList.removeAllViews();
-        if (transcript == null || transcript.trim().isEmpty()) return;
-        for (String line : transcript.split("\\n")) {
-            if (!line.startsWith("[")) continue;
-            int close = line.indexOf(']');
-            int speakerAt = line.indexOf("Спикер ", close);
-            int colon = line.indexOf(':', speakerAt);
-            if (close < 0 || speakerAt < 0 || colon < 0) continue;
-            String timeRange = line.substring(1, close);
-            String startText = timeRange.split("–")[0].trim();
-            long startMs = parseTimecode(startText);
-            if (startMs < 0) continue;
-            String speaker = line.substring(speakerAt, colon);
-            String speech = line.substring(colon + 1).trim();
-            Button segment = button(startText + "   " + speaker + "\n" + speech);
-            segment.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            segment.setOnClickListener(v -> playFromTimestamp(startMs));
-            segmentList.addView(segment);
-        }
-    }
-
-    private long parseTimecode(String value) {
-        try {
-            String[] parts = value.split(":");
-            if (parts.length != 3) return -1;
-            String[] secondsAndMillis = parts[2].split("\\.");
-            if (secondsAndMillis.length != 2) return -1;
-            long hours = Long.parseLong(parts[0]);
-            long minutes = Long.parseLong(parts[1]);
-            long seconds = Long.parseLong(secondsAndMillis[0]);
-            String millisText = secondsAndMillis[1];
-            while (millisText.length() < 3) millisText += "0";
-            if (millisText.length() > 3) millisText = millisText.substring(0, 3);
-            long millis = Long.parseLong(millisText);
-            return (((hours * 60 + minutes) * 60 + seconds) * 1000) + millis;
-        } catch (NumberFormatException error) {
-            return -1;
-        }
-    }
-
-    private void playFromTimestamp(long positionMs) {
-        if (selected == null || !new File(selected.audioPath).isFile()) {
-            setStatus("Аудиофайл недоступен");
-            return;
-        }
-        try {
-            if (audioPlayer != null) {
-                audioPlayer.release();
-                audioPlayer = null;
-            }
-            audioPlayer = new MediaPlayer();
-            audioPlayer.setDataSource(selected.audioPath);
-            audioPlayer.setOnPreparedListener(player -> {
-                player.seekTo((int) positionMs);
-                player.start();
-                setStatus("Воспроизведение с " + LocalTranscriptionEngine.formatTime(positionMs));
+        navBar = new LinearLayout(this);
+        navBar.setOrientation(LinearLayout.VERTICAL);
+        navBar.setBackgroundColor(Palette.SURFACE);
+        View divider = new View(this);
+        divider.setBackgroundColor(Palette.BORDER);
+        navBar.addView(divider, new LinearLayout.LayoutParams(-1, Math.max(1, Ui.dp(this, 1))));
+        navRow = new LinearLayout(this);
+        navRow.setPadding(Ui.dp(this, 8), Ui.dp(this, 8), Ui.dp(this, 8), Ui.dp(this, 8));
+        navPills = new FrameLayout[TAB_LABELS.length];
+        navIcons = new ImageView[TAB_LABELS.length];
+        navLabels = new TextView[TAB_LABELS.length];
+        for (int i = 0; i < TAB_LABELS.length; i++) {
+            final int index = i;
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setGravity(Gravity.CENTER_HORIZONTAL);
+            item.setOnClickListener(v -> {
+                if (detail != null) closeDetail();
+                showTab(index);
             });
-            audioPlayer.setOnCompletionListener(player -> setStatus("Воспроизведение завершено"));
-            audioPlayer.prepareAsync();
-        } catch (Exception e) {
-            setStatus("Не удалось воспроизвести аудио: " + e.getMessage());
+            FrameLayout pill = new FrameLayout(this);
+            ImageView icon = new ImageView(this);
+            icon.setImageResource(TAB_ICONS[i]);
+            pill.addView(icon, new FrameLayout.LayoutParams(Ui.dp(this, 24), Ui.dp(this, 24), Gravity.CENTER));
+            item.addView(pill, new LinearLayout.LayoutParams(Ui.dp(this, 60), Ui.dp(this, 32)));
+            TextView label = Ui.text(this, TAB_LABELS[i], 11, Palette.MUTED);
+            label.setGravity(Gravity.CENTER);
+            item.addView(label, Ui.margins(Ui.lp(-2, -2), this, 0, 4, 0, 0));
+            navPills[i] = pill;
+            navIcons[i] = icon;
+            navLabels[i] = label;
+            navRow.addView(item, new LinearLayout.LayoutParams(0, -2, 1f));
+        }
+        navBar.addView(navRow);
+        root.addView(navBar, new LinearLayout.LayoutParams(-1, -2));
+
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+            imeShown = ime.bottom > bars.bottom;
+            view.setPadding(bars.left, bars.top, bars.right, imeShown ? ime.bottom : 0);
+            navBar.setPadding(0, 0, 0, imeShown ? 0 : bars.bottom);
+            updateNavVisibility();
+            return WindowInsetsCompat.CONSUMED;
+        });
+        setContentView(root);
+    }
+
+    private void updateNavVisibility() {
+        navBar.setVisibility(detail == null && !imeShown ? View.VISIBLE : View.GONE);
+    }
+
+    private void updateNav() {
+        for (int i = 0; i < TAB_LABELS.length; i++) {
+            boolean selected = i == tab;
+            navPills[i].setBackground(selected ? Ui.box(this, Palette.alpha(Palette.ACCENT, 0x40), 16) : Ui.transparent());
+            navIcons[i].setColorFilter(selected ? Palette.ACCENT_SOFT : Palette.MUTED);
+            navLabels[i].setTextColor(selected ? Palette.TEXT : Palette.MUTED);
         }
     }
 
-    private void saveTranscript() {
-        if (selected == null) { setStatus("Сначала выберите запись"); return; }
-        String text = transcriptEditor.getText().toString();
-        database.updateTranscript(selected.id, text);
-        renderTranscriptSegments(text);
-        selected = new RecordingDb.Recording(selected.id, selected.title, selected.audioPath,
-                text, selected.createdAt, selected.status);
-        setStatus("Текст сохранён");
-    }
+    // ---- навигация ----------------------------------------------------------------------------
 
-    private void writePdf(Uri destination) {
-        if (destination == null || selected == null) return;
-        String text = transcriptEditor.getText().toString();
-        PdfDocument pdf = new PdfDocument();
-        PdfDocument.PageInfo info = new PdfDocument.PageInfo.Builder(595, 842, 1).create();
-        PdfDocument.Page page = pdf.startPage(info);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        paint.setTextSize(18);
-        paint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-        page.getCanvas().drawText(selected.title, 48, 58, paint);
-        paint.setTextSize(10);
-        paint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
-        int y = 88;
-        int maxChars = 92;
-        String[] paragraphs = text.split("\\n");
-        for (String paragraph : paragraphs) {
-            String rest = paragraph;
-            while (!rest.isEmpty()) {
-                if (y > 790) {
-                    pdf.finishPage(page);
-                    info = new PdfDocument.PageInfo.Builder(595, 842, pdf.getPages().size() + 1).create();
-                    page = pdf.startPage(info);
-                    y = 52;
-                }
-                int end = Math.min(maxChars, rest.length());
-                if (end < rest.length()) {
-                    int space = rest.lastIndexOf(' ', end);
-                    if (space > 0) end = space;
-                }
-                page.getCanvas().drawText(rest.substring(0, end), 48, y, paint);
-                rest = rest.substring(end).trim();
-                y += 15;
-            }
-            y += 8;
+    void showTab(int index) {
+        if (tab >= 0 && detail == null) screens[tab].onHide();
+        tab = index;
+        for (int i = 0; i < screens.length; i++) {
+            screens[i].view().setVisibility(i == index ? View.VISIBLE : View.GONE);
         }
-        pdf.finishPage(page);
-        try (OutputStream out = getContentResolver().openOutputStream(destination)) {
-            if (out == null) throw new IllegalStateException("Не удалось создать PDF");
-            pdf.writeTo(out);
-            setStatus("PDF экспортирован");
-        } catch (Exception e) {
-            setStatus("Ошибка PDF: " + e.getMessage());
-        } finally {
-            pdf.close();
+        if (detail == null) screens[index].onShow();
+        updateNav();
+    }
+
+    void openRecording(long id) {
+        openRecording(id, -1);
+    }
+
+    /** Открывает запись; focusMs ≥ 0 — подвести список к реплике на этом времени (без запуска звука). */
+    void openRecording(long id, long focusMs) {
+        if (detail != null) {
+            detail.release();
+            detailFrame.removeAllViews();
+            detail = null;
+        } else if (tab >= 0) {
+            screens[tab].onHide();
+        }
+        detail = new DetailScreen(this, id, focusMs);
+        detailFrame.removeAllViews();
+        detailFrame.addView(detail.view(), new FrameLayout.LayoutParams(-1, -1));
+        contentFrame.setVisibility(View.GONE);
+        detailFrame.setVisibility(View.VISIBLE);
+        backCallback.setEnabled(true);
+        updateNavVisibility();
+    }
+
+    void openLatestRecording() {
+        List<Recording> all = db.all();
+        if (!all.isEmpty()) openRecording(all.get(0).id);
+    }
+
+    void closeDetail() {
+        if (detail == null) return;
+        detail.release();
+        detailFrame.removeAllViews();
+        detail = null;
+        detailFrame.setVisibility(View.GONE);
+        contentFrame.setVisibility(View.VISIBLE);
+        backCallback.setEnabled(false);
+        updateNavVisibility();
+        if (tab >= 0) screens[tab].onShow();
+    }
+
+    private void handleIntent(Intent intent) {
+        if (intent == null) return;
+        long id = intent.getLongExtra(TranscriptionService.EXTRA_OPEN, -1);
+        if (id >= 0) {
+            intent.removeExtra(TranscriptionService.EXTRA_OPEN);
+            openRecording(id);
         }
     }
 
-    private Button button(String text) {
-        Button button = new Button(this);
-        button.setText(text);
-        button.setAllCaps(false);
-        button.setTextSize(14);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(48));
-        params.bottomMargin = dp(8);
-        button.setLayoutParams(params);
-        return button;
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIntent(intent);
     }
 
-    private TextView sectionTitle(String text) {
-        TextView view = new TextView(this);
-        view.setText(text);
-        view.setTextSize(18);
-        view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        view.setPadding(0, dp(20), 0, dp(8));
-        return view;
+    // ---- жизненный цикл -----------------------------------------------------------------------
+
+    @Override protected void onStart() {
+        super.onStart();
+        RecordingService.setListener(recordScreen);
+        recordScreen.syncState();
+        if (detail != null) detail.onDataChanged(-1);
+        else if (tab >= 0) screens[tab].onDataChanged(-1);
     }
 
-    private void setStatus(String text) {
-        if (statusText != null && text != null) statusText.setText(text);
+    @Override protected void onStop() {
+        RecordingService.setListener(null);
+        if (detail != null) detail.pausePlayer();
+        super.onStop();
     }
 
-    private String safeFileName(String value) {
-        return value.replaceAll("[^a-zA-Z0-9а-яА-Я_-]", "_");
-    }
-
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    @Override protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putInt("tab", Math.max(0, tab));
+        out.putLong("open", detail != null ? detail.id : -1);
     }
 
     @Override protected void onDestroy() {
-        try { unregisterReceiver(recordingReceiver); } catch (Exception ignored) {}
-        ui.removeCallbacks(recordingTicker);
-        ui.removeCallbacks(processingTicker);
-        if (modelRepository != null) modelRepository.close();
-        if (transcriptionExecutor != null) transcriptionExecutor.shutdownNow();
-        if (audioPlayer != null) {
-            try { audioPlayer.release(); } catch (Exception ignored) {}
-            audioPlayer = null;
-        }
-        database.close();
+        RecordingDb.removeListener(dbListener);
+        RecordingService.setListener(null);
+        if (detail != null) detail.release();
+        if (screens != null) for (BaseScreen screen : screens) screen.release();
+        io.shutdown();
         super.onDestroy();
+    }
+
+    // ---- права --------------------------------------------------------------------------------
+
+    /** Выполняет действие, когда есть доступ к микрофону; при необходимости сначала спрашивает его. */
+    void withRecordPermission(Runnable next) {
+        boolean granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+        if (granted) {
+            next.run();
+            return;
+        }
+        afterPermission = next;
+        if (Build.VERSION.SDK_INT >= 33) {
+            permissionLauncher.launch(new String[]{Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.POST_NOTIFICATIONS});
+        } else {
+            permissionLauncher.launch(new String[]{Manifest.permission.RECORD_AUDIO});
+        }
+    }
+
+    private void askNotifications() {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this,
+                Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS);
+        }
+    }
+
+    // ---- модели -------------------------------------------------------------------------------
+
+    private void offerModelDownload() {
+        if (settings.modelsPrompted() || new ModelRepository(this).installed()) return;
+        settings.setModelsPrompted(true);
+        Ui.dialog(this).setTitle("Скачать модели распознавания?")
+                .setMessage("Для расшифровки нужны модели речи и голосов — около 690 МБ. "
+                        + "Они скачиваются один раз, дальше приложение работает без интернета. "
+                        + "Лучше загружать по Wi-Fi.")
+                .setPositiveButton("Скачать", (d, w) -> downloadModels())
+                .setNegativeButton("Позже", null)
+                .show();
+    }
+
+    void downloadModels() {
+        askNotifications();
+        try {
+            TranscriptionService.downloadModels(this);
+        } catch (RuntimeException e) {
+            toast("Не удалось начать загрузку: " + e.getMessage());
+        }
+    }
+
+    void transcribe(long recordingId) {
+        askNotifications();
+        try {
+            TranscriptionService.enqueue(this, recordingId);
+        } catch (RuntimeException e) {
+            toast("Не удалось запустить расшифровку: " + e.getMessage());
+        }
+    }
+
+    // ---- импорт -------------------------------------------------------------------------------
+
+    void pickAudio() {
+        importLauncher.launch(new String[]{"audio/*", "video/*", "application/ogg"});
+    }
+
+    private void importFiles(List<Uri> uris) {
+        if (uris == null || uris.isEmpty()) return;
+        io.execute(() -> {
+            int imported = 0;
+            long lastId = -1;
+            String error = null;
+            for (Uri uri : uris) {
+                try {
+                    lastId = importOne(uri);
+                    imported++;
+                } catch (Exception e) {
+                    error = e.getMessage() == null ? "Не удалось импортировать файл" : e.getMessage();
+                }
+            }
+            final int count = imported;
+            final long openId = lastId;
+            final String message = error;
+            runOnUiThread(() -> {
+                if (message != null) toast(message);
+                if (count == 1 && uris.size() == 1) openRecording(openId);
+                else if (count > 0) {
+                    if (detail != null) closeDetail();
+                    showTab(TAB_LIBRARY);
+                }
+            });
+        });
+    }
+
+    private long importOne(Uri uri) throws IOException {
+        String name = displayName(uri);
+        File dir = new File(getFilesDir(), "recordings");
+        if (!dir.exists() && !dir.mkdirs()) throw new IOException("Не удалось создать каталог записей");
+        String extension = extensionOf(name);
+        File target = File.createTempFile("import_", extension, dir);
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             OutputStream out = new java.io.FileOutputStream(target)) {
+            if (in == null) throw new IOException("Не удалось открыть «" + name + "»");
+            byte[] buffer = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+        } catch (IOException e) {
+            target.delete();
+            throw e;
+        }
+        long duration = AudioDecoder.durationMs(target.getAbsolutePath());
+        if (duration <= 0) {
+            target.delete();
+            throw new IOException("Не удалось прочитать «" + name + "»: формат не поддерживается");
+        }
+        long id = db.add(titleOf(name), target.getAbsolutePath(), Status.RECORDED, duration);
+        if (settings.autoTranscribe()) {
+            try {
+                TranscriptionService.enqueue(this, id);
+            } catch (RuntimeException ignored) {
+                // Запись сохранена; расшифровку можно запустить вручную.
+            }
+        }
+        return id;
+    }
+
+    private String displayName(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
+        } catch (RuntimeException ignored) {
+            // Имя необязательно: ниже подставляется запасное.
+        }
+        String last = uri.getLastPathSegment();
+        return last == null || last.isEmpty() ? "Импорт" : last;
+    }
+
+    private static String extensionOf(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || name.length() - dot > 8) return ".audio";
+        return name.substring(dot).replaceAll("[^A-Za-z0-9.]", "");
+    }
+
+    private static String titleOf(String name) {
+        int dot = name.lastIndexOf('.');
+        String title = dot > 0 ? name.substring(0, dot) : name;
+        title = title.trim();
+        return title.isEmpty() ? "Импорт" : title;
+    }
+
+    // ---- экспорт ------------------------------------------------------------------------------
+
+    void exportPdf(long recordingId) {
+        Recording r = db.get(recordingId);
+        if (r == null) return;
+        exportTarget = recordingId;
+        pdfLauncher.launch(safeName(r.title) + ".pdf");
+    }
+
+    void exportMarkdown(long recordingId) {
+        Recording r = db.get(recordingId);
+        if (r == null) return;
+        exportTarget = recordingId;
+        markdownLauncher.launch(safeName(r.title) + ".md");
+    }
+
+    private void writeExport(Uri destination, boolean pdf) {
+        final long id = exportTarget;
+        exportTarget = -1;
+        if (destination == null || id < 0) return;
+        final boolean clean = settings.cleanText();
+        io.execute(() -> {
+            String message;
+            try (OutputStream out = getContentResolver().openOutputStream(destination)) {
+                Recording r = db.get(id);
+                if (out == null || r == null) throw new IOException("Не удалось создать файл");
+                List<Segment> segments = db.segments(id);
+                List<Task> tasks = db.tasksFor(id);
+                if (pdf) {
+                    PdfExporter.export(r, segments, tasks, clean, out);
+                } else {
+                    out.write(NoteBuilder.markdown(r, segments, tasks, clean).getBytes(StandardCharsets.UTF_8));
+                }
+                message = pdf ? "PDF сохранён" : "Markdown сохранён";
+            } catch (Exception e) {
+                message = "Не удалось сохранить файл" + (e.getMessage() == null ? "" : ": " + e.getMessage());
+            }
+            final String result = message;
+            runOnUiThread(() -> toast(result));
+        });
+    }
+
+    private static String safeName(String title) {
+        String name = title.replaceAll("[\\\\/:*?\"<>|\\n\\r]", "_").trim();
+        if (name.length() > 80) name = name.substring(0, 80).trim();
+        return name.isEmpty() ? "Запись" : name;
+    }
+
+    // ---- изменения записей --------------------------------------------------------------------
+
+    void rename(long recordingId, String title) {
+        String clean = title == null ? "" : title.trim();
+        if (clean.isEmpty()) {
+            toast("Название не может быть пустым");
+            return;
+        }
+        db.rename(recordingId, clean);
+    }
+
+    void updateSegment(long recordingId, int idx, int speaker, String text) {
+        io.execute(() -> {
+            db.updateSegment(recordingId, idx, speaker, text);
+            db.replaceTasks(recordingId, NoteBuilder.tasks(db.segments(recordingId)));
+        });
+    }
+
+    void confirmDelete(Recording r) {
+        if (r == null) return;
+        if (Status.isBusy(r.status)) {
+            toast("Дождитесь окончания расшифровки");
+            return;
+        }
+        Ui.dialog(this).setTitle("Удалить запись?")
+                .setMessage("«" + r.title + "» будет удалена вместе с аудио, расшифровкой и задачами.")
+                .setPositiveButton("Удалить", (d, w) -> io.execute(() -> {
+                    String path = db.delete(r.id);
+                    if (path != null) new File(path).delete();
+                    runOnUiThread(() -> {
+                        if (detail != null && detail.id == r.id) closeDetail();
+                    });
+                }))
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    // ---- диалоги ------------------------------------------------------------------------------
+
+    void prompt(String title, String initial, String hint, Consumer<String> onOk) {
+        EditText edit = new EditText(this);
+        edit.setText(initial);
+        edit.setHint(hint);
+        edit.setTextColor(Palette.TEXT);
+        edit.setHintTextColor(Palette.MUTED);
+        edit.setTextSize(16);
+        edit.setSingleLine(true);
+        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        edit.setBackground(Ui.box(this, Palette.SURFACE_2, 12, Palette.BORDER));
+        edit.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), Ui.dp(this, 12), Ui.dp(this, 10));
+        edit.setSelection(edit.getText().length());
+        FrameLayout box = new FrameLayout(this);
+        box.setPadding(Ui.dp(this, 20), Ui.dp(this, 8), Ui.dp(this, 20), 0);
+        box.addView(edit, new FrameLayout.LayoutParams(-1, -2));
+        Ui.dialog(this).setTitle(title).setView(box)
+                .setPositiveButton("Сохранить", (d, w) -> onOk.accept(edit.getText().toString()))
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    void toast(String text) {
+        Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
     }
 }

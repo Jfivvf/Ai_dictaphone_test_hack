@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <style name="Theme.AIDictaphone" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.AIDictaphone" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:colorAccent">#FF9B90FF</item>
+        <item name="android:textColorPrimary">#FFF2F2F6</item>
+        <item name="android:textColorSecondary">#FF8F8F9C</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowSoftInputMode">adjustResize</item>
+    </style>
 </resources>
