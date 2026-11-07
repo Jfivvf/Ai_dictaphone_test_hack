@@ -13,23 +13,13 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Сборка итогового документа из реплик: markdown, краткое содержание и задачи.
- * Краткое содержание и задачи строятся локально и без нейросети: выбираются реальные предложения
- * из расшифровки, ничего не сочиняется.
- */
 final class NoteBuilder {
     private NoteBuilder() {}
-
-    // ---- текст реплики с учётом опции «причесать» ---------------------------------------------
 
     static String text(Segment segment, boolean clean) {
         return clean ? TextCleaner.clean(segment.text) : segment.text;
     }
 
-    // ---- markdown -----------------------------------------------------------------------------
-
-    /** Экранирует символы, которые markdown иначе принял бы за разметку. */
     static String esc(String s) {
         return s.replace("\\", "\\\\").replace("*", "\\*").replace("`", "\\`");
     }
@@ -80,13 +70,7 @@ final class NoteBuilder {
         return md.toString().trim() + "\n";
     }
 
-    // ---- JSON ---------------------------------------------------------------------------------
-
-    /**
-     * JSON для обработки программами: {"transcript":[{"speaker_id","start_ms","end_ms","text"}]}.
-     * speaker_id — «speaker_N» по номеру говорящего, «unknown», если говорящие не определялись.
-     */
-    static String json(List<Segment> segments, boolean clean) throws org.json.JSONException {
+    static String json(List<Segment> segments) throws org.json.JSONException {
         org.json.JSONArray array = new org.json.JSONArray();
         for (Segment s : segments) {
             org.json.JSONObject item = new org.json.JSONObject();
@@ -106,8 +90,6 @@ final class NoteBuilder {
         for (Segment s : segments) if (s.speaker >= 0) seen.add(s.speaker);
         return new ArrayList<>(seen);
     }
-
-    // ---- краткое содержание -------------------------------------------------------------------
 
     private static final Set<String> STOP = new HashSet<>(Arrays.asList(
             "этот", "этого", "этом", "этой", "этим", "эти", "этих", "этому", "такой", "такая", "такое", "такие",
@@ -176,7 +158,6 @@ final class NoteBuilder {
         List<String> keys = new ArrayList<>();
         for (String raw : sentence.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}]+")) {
             if (raw.length() < 4 || STOP.contains(raw)) continue;
-            // Грубая основа слова: общий префикс склеивает падежные формы русских слов.
             keys.add(raw.length() > 5 ? raw.substring(0, 5) : raw);
         }
         return keys;
@@ -196,8 +177,6 @@ final class NoteBuilder {
         }
         return result;
     }
-
-    // ---- задачи -------------------------------------------------------------------------------
 
     private static final String B = "(?<![\\p{L}\\p{N}])";
     private static final String E = "(?![\\p{L}\\p{N}])";
