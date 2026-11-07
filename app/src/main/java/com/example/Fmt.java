@@ -35,6 +35,16 @@ final class Fmt {
         return (minutes / 60) + " ч" + (rest == 0 ? "" : " " + rest + " мин");
     }
 
+    /** Оставшееся время для строки прогресса: «ещё меньше минуты», «ещё ~3 мин», «ещё ~1 ч 5 мин». */
+    static String eta(long ms) {
+        long seconds = Math.max(0, ms) / 1000;
+        if (seconds < 45) return "ещё меньше минуты";
+        long minutes = Math.round(seconds / 60.0);
+        if (minutes < 60) return "ещё ~" + minutes + " мин";
+        long rest = minutes % 60;
+        return "ещё ~" + (minutes / 60) + " ч" + (rest == 0 ? "" : " " + rest + " мин");
+    }
+
     /** Склонение по числу: plural(2, "задача", "задачи", "задач") → «задачи». */
     static String plural(long n, String one, String few, String many) {
         long mod100 = Math.abs(n) % 100;
