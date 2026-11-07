@@ -4,7 +4,6 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.media.MediaRecorder;
 
-/** Настройки приложения. Распознавание по умолчанию не правит текст: «причёсывание» выключено. */
 final class Settings {
     static final int SOURCE_SPEECH = 0;
     static final int SOURCE_MIC = 1;
@@ -16,7 +15,6 @@ final class Settings {
         prefs = context.getApplicationContext().getSharedPreferences("settings", Context.MODE_PRIVATE);
     }
 
-    /** Убирать слова-паразиты и повторы при показе и экспорте. По умолчанию выключено. */
     boolean cleanText() { return prefs.getBoolean("clean_text", false); }
     void setCleanText(boolean value) { prefs.edit().putBoolean("clean_text", value).apply(); }
 
@@ -31,8 +29,11 @@ final class Settings {
     void setLanguage(String value) { prefs.edit().putString("language", value).apply(); }
 
     /** Точное число говорящих; 0 — определять автоматически. */
+    void setSpeakerCount(int v) { prefs.edit().putInt("speaker_count", Math.max(0, Math.min(20, v))).apply(); }
+    /**
     int speakerCount() { return prefs.getInt("speaker_count", 0); }
-    void setSpeakerCount(int value) { prefs.edit().putInt("speaker_count", value).apply(); }
+    void setSpeakerCount(int value) { prefs.edit().putInt("speaker_count", value).apply(); } 
+    */
 
     /** Один раз при первом запуске предлагаем скачать модели. */
     boolean modelsPrompted() { return prefs.getBoolean("models_prompted", false); }
