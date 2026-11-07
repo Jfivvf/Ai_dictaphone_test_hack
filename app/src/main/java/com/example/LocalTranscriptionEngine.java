@@ -243,9 +243,19 @@ final class LocalTranscriptionEngine {
             }
         }
         List<Turn> result = new ArrayList<>();
+
         for (Turn turn : merged) {
-            if (turn.endMs - turn.startMs >= MIN_TURN_MS) result.add(turn);
+            long duration = turn.endMs - turn.startMs;
+
+            if (duration >= MIN_TURN_MS) {
+                result.add(turn);
+            } else if (duration >= 150) {
+                // Короткую реплику сохраняем для Whisper,
+                // но не приписываем ей ненадёжного говорящего.
+                result.add(new Turn(turn.startMs, turn.endMs, -1));
+            }
         }
+
         return result;
     }
 
