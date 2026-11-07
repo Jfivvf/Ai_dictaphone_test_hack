@@ -47,25 +47,31 @@ final class SettingsScreen extends BaseScreen {
                 languageIndex(settings.language()), index -> settings.setLanguage(LANGUAGE_VALUES[index]));
         recognition.addView(language);
         recognition.addView(Ui.text(ctx, "Число говорящих", 12, Palette.MUTED), Ui.margins(Ui.lp(-2, -2), ctx, 0, 18, 0, 8));
-        Ui.Segmented speakers = new Ui.Segmented(ctx, new String[]{"Авто", "2", "3", "4", "5", "6"},
-                speakerIndex(settings.speakerCount()), index -> settings.setSpeakerCount(SPEAKER_VALUES[index]));
-        recognition.addView(speakers);
-        TextView speakersHint = Ui.text(ctx, "Если знаете точное число, укажите его: разделение станет заметно точнее. "
-                + "Действует на новые расшифровки.", 12, Palette.MUTED);
-        speakersHint.setLineSpacing(dp(1), 1f);
-        recognition.addView(speakersHint, Ui.margins(Ui.lp(-1, -2), ctx, 2, 8, 0, 0));
-        recognition.addView(switchRow("Причёсанный текст",
-                "Убирать «эээ», «ммм» и повторы в показе и экспорте. Выключено — текст дословный.",
-                settings.cleanText(), settings::setCleanText));
-        recognition.addView(switchRow("Расшифровать после записи",
-                "Запускается в фоне сразу после остановки записи.",
-                settings.autoTranscribe(), settings::setAutoTranscribe));
-        page.addView(recognition);
+        EditText speakerInput = new EditText(ctx);
+        speakerInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        speakerInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2)});
+        speakerInput.setText(String.valueOf(Math.max(2, settings.speakerCount())));
+        speakerInput.setTextColor(Palette.TEXT);
+        speakerInput.setBackground(Ui.box(ctx, Palette.SURFACE_2, 12, Palette.BORDER));
+        speakerInput.setPadding(dp(12), dp(10), dp(12), dp(10));
+        speakerInput.setVisibility(settings.speakerCount() > 0 ? View.VISIBLE : View.GONE);
+        speakerInput.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            public void afterTextChanged(Editable e) {
+                if (speakerInput.getVisibility() != View.VISIBLE) return;
+                try { settings.setSpeakerCount(Math.max(1, Integer.parseInt(e.toString()))); }
+                catch (NumberFormatException ignored) {}
+            }
+        });
+        Ui.Segmented mode = new Ui.Segmented(ctx, new String[]{"Авто", "Указать"}, settings.speakerCount() > 0 ? 1 : 0, i -> { speakerInput.setVisibility(i == 1 ? View.VISIBLE : View.GONE);
+        settings.setSpeakerCount(i == 1 ? Math.max(1, parseOr(speakerInput, 2)) : 0);
+    });
 
         // Отображение
         page.addView(Ui.space(ctx, 16));
         LinearLayout display = section("Отображение");
-        display.addView(switchRow("Цвета говорящих",
+        display.addView(switchRow("Выделение спикеров",
                 "Выделять реплики разных людей цветом. Выключено — чистый markdown.",
                 settings.speakerColors(), settings::setSpeakerColors));
         page.addView(display);
