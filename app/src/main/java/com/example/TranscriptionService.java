@@ -180,18 +180,26 @@ public class TranscriptionService extends Service {
 
             db.setStatus(id, Status.DECODING, "");
             report(id, "Подготовка аудио", -1);
-            AudioDecoder.AudioData data = AudioDecoder.decode(this, recording.audioPath);
-            long durationMs = data.samples.length * 1000L / data.sampleRate;
+            File pcmFile = new File(getCacheDir(), "pcm_" + id + ".raw");
+            long durationMs;
+            LocalTranscriptionEngine.Result result;
+            try {
+                AudioDecoder.Pcm pcm = AudioDecoder.decodeToPcm(recording.audioPath, pcmFile);
+                durationMs = pcm.durationMs();
 
-            db.setStatus(id, Status.RECOGNIZING, "");
-            report(id, "Расшифровка", -1);
-            int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
-            LocalTranscriptionEngine.Result result = LocalTranscriptionEngine.process(
-                    data, files.encoder, files.decoder, files.tokens, files.segmentation, files.embedding,
-                    settings.language(), threads, (stage, done, total) -> {
-                        if (total > 0) report(id, stage + " · " + done + " из " + total, done * 100 / total);
-                        else report(id, stage, -1);
-                    });
+                db.setStatus(id, Status.RECOGNIZING, "");
+                report(id, "Расшифровка", -1);
+                int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
+                result = LocalTranscriptionEngine.process(
+                        pcm, files.encoder, files.decoder, files.tokens, files.segmentation, files.embedding,
+                        settings.language(), threads, settings.speakerCount(), (stage, done, total) -> {
+                            if (total > 0) report(id, stage + " · " + done + " из " + total, done * 100 / total);
+                            else report(id, stage, -1);
+                        });
+            } finally {
+                //noinspection ResultOfMethodCallIgnored
+                pcmFile.delete();
+            }
 
             List<Segment> segments = result.segments;
             boolean withSpeakers = result.diarizationError == null;
@@ -200,7 +208,9 @@ public class TranscriptionService extends Service {
             db.replaceTasks(id, NoteBuilder.tasks(segments));
             notifyDone(recording.title, id);
         } catch (Throwable e) {
-            String message = e.getMessage() == null || e.getMessage().trim().isEmpty()
+            String message = e instanceof OutOfMemoryError
+                    ? "Не хватило памяти. Запись слишком длинная для этого устройства: закройте другие приложения или разделите запись на части"
+                    : e.getMessage() == null || e.getMessage().trim().isEmpty()
                     ? e.getClass().getSimpleName() : e.getMessage();
             db.setStatus(id, Status.ERROR, message);
         }

@@ -80,6 +80,27 @@ final class NoteBuilder {
         return md.toString().trim() + "\n";
     }
 
+    // ---- JSON ---------------------------------------------------------------------------------
+
+    /**
+     * JSON для обработки программами: {"transcript":[{"speaker_id","start_ms","end_ms","text"}]}.
+     * speaker_id — «speaker_N» по номеру говорящего, «unknown», если говорящие не определялись.
+     */
+    static String json(List<Segment> segments, boolean clean) throws org.json.JSONException {
+        org.json.JSONArray array = new org.json.JSONArray();
+        for (Segment s : segments) {
+            org.json.JSONObject item = new org.json.JSONObject();
+            item.put("speaker_id", s.speaker >= 0 ? "speaker_" + (s.speaker + 1) : "unknown");
+            item.put("start_ms", s.startMs);
+            item.put("end_ms", s.endMs);
+            item.put("text", text(s, clean));
+            array.put(item);
+        }
+        org.json.JSONObject root = new org.json.JSONObject();
+        root.put("transcript", array);
+        return root.toString(2).replace("\\/", "/") + "\n";
+    }
+
     static List<Integer> speakersInOrder(List<Segment> segments) {
         Set<Integer> seen = new LinkedHashSet<>();
         for (Segment s : segments) if (s.speaker >= 0) seen.add(s.speaker);

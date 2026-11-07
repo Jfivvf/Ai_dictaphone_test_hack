@@ -30,6 +30,10 @@ final class Settings {
     String language() { return prefs.getString("language", "ru"); }
     void setLanguage(String value) { prefs.edit().putString("language", value).apply(); }
 
+    /** Точное число говорящих; 0 — определять автоматически. */
+    int speakerCount() { return prefs.getInt("speaker_count", 0); }
+    void setSpeakerCount(int value) { prefs.edit().putInt("speaker_count", value).apply(); }
+
     /** Один раз при первом запуске предлагаем скачать модели. */
     boolean modelsPrompted() { return prefs.getBoolean("models_prompted", false); }
     void setModelsPrompted(boolean value) { prefs.edit().putBoolean("models_prompted", value).apply(); }

@@ -13,6 +13,7 @@ import java.util.Locale;
 /** Настройки распознавания, отображения и моделей. Параметры звука находятся на экране записи. */
 final class SettingsScreen extends BaseScreen {
     private static final String[] LANGUAGE_VALUES = {"ru", "en", ""};
+    private static final int[] SPEAKER_VALUES = {0, 2, 3, 4, 5, 6};
     private static final long MODELS_BYTES = 639387718L + 6958444L + 39593761L;
 
     private final ScrollView scroll;
@@ -45,6 +46,14 @@ final class SettingsScreen extends BaseScreen {
         Ui.Segmented language = new Ui.Segmented(ctx, new String[]{"Русский", "English", "Авто"},
                 languageIndex(settings.language()), index -> settings.setLanguage(LANGUAGE_VALUES[index]));
         recognition.addView(language);
+        recognition.addView(Ui.text(ctx, "Число говорящих", 12, Palette.MUTED), Ui.margins(Ui.lp(-2, -2), ctx, 0, 18, 0, 8));
+        Ui.Segmented speakers = new Ui.Segmented(ctx, new String[]{"Авто", "2", "3", "4", "5", "6"},
+                speakerIndex(settings.speakerCount()), index -> settings.setSpeakerCount(SPEAKER_VALUES[index]));
+        recognition.addView(speakers);
+        TextView speakersHint = Ui.text(ctx, "Если знаете точное число, укажите его: разделение станет заметно точнее. "
+                + "Действует на новые расшифровки.", 12, Palette.MUTED);
+        speakersHint.setLineSpacing(dp(1), 1f);
+        recognition.addView(speakersHint, Ui.margins(Ui.lp(-1, -2), ctx, 2, 8, 0, 0));
         recognition.addView(switchRow("Причёсанный текст",
                 "Убирать «эээ», «ммм» и повторы в показе и экспорте. Выключено — текст дословный.",
                 settings.cleanText(), settings::setCleanText));
@@ -90,6 +99,11 @@ final class SettingsScreen extends BaseScreen {
         row.addView(Ui.toggle(ctx, checked, (b, on) -> change.accept(on)));
         row.setLayoutParams(Ui.margins(Ui.lp(-1, -2), ctx, 0, 18, 0, 0));
         return row;
+    }
+
+    private static int speakerIndex(int count) {
+        for (int i = 0; i < SPEAKER_VALUES.length; i++) if (SPEAKER_VALUES[i] == count) return i;
+        return 0;
     }
 
     private static int languageIndex(String code) {
