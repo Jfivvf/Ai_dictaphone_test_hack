@@ -114,7 +114,7 @@ public class RecordingService extends Service {
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
             recorder.setAudioChannels(1);
             recorder.setAudioEncodingBitRate(settings.bitrate());
-            recorder.setAudioSamplingRate(44100);
+            recorder.setAudioSamplingRate(settings.sampleRate());
             recorder.setOutputFile(outputPath);
             recorder.prepare();
             recorder.start();
