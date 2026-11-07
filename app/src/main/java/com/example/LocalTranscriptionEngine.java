@@ -16,7 +16,6 @@ import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -33,10 +32,13 @@ import java.util.List;
  *
  * Защита от «выдуманных» слов: тишина и шум не отправляются в Whisper, повторяющиеся циклы и известные
  * мусорные фразы вырезаются. Слова-паразиты и обычные повторы речи остаются как их распознала модель.
+ *
+ * Прогресс расшифровки считается по длине звука в репликах, а не по их числу.
  */
 final class LocalTranscriptionEngine {
     interface Progress {
-        void onStep(String stage, int done, int total);
+        /** fraction — доля этапа 0..1 или -1, если неизвестна; detail — например «реплика 12 из 47». */
+        void onProgress(ProgressTracker.Stage stage, float fraction, String detail);
     }
 
     static final class Result {
@@ -80,7 +82,7 @@ final class LocalTranscriptionEngine {
                           int speakerCount, Progress progress) throws Exception {
         final long totalMs = pcm.durationMs();
 
-        progress.onStep("Определение говорящих", 0, 0);
+        progress.onProgress(ProgressTracker.Stage.DIARIZE, -1f, "");
         List<Turn> turns = null;
         String diarizationError = null;
         try {
@@ -113,13 +115,21 @@ final class LocalTranscriptionEngine {
             if (to > position) chunks.add(new int[]{t, (int) position, (int) to});
         }
 
+        long totalSpeech = 0;
+        for (int[] chunk : chunks) totalSpeech += chunk[2] - chunk[1];
+        long doneSpeech = 0;
+
         List<Segment> result = new ArrayList<>();
         OfflineRecognizer recognizer = createRecognizer(encoder, decoder, tokens, language, threads);
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (Thread.currentThread().isInterrupted()) throw new InterruptedException("Обработка остановлена");
                 int[] chunk = chunks.get(i);
-                progress.onStep("Расшифровка", i, chunks.size());
+                progress.onProgress(ProgressTracker.Stage.RECOGNIZE,
+                        totalSpeech > 0 ? doneSpeech / (float) totalSpeech : 0f,
+                        "реплика " + (i + 1) + " из " + chunks.size());
+                doneSpeech += chunk[2] - chunk[1];
+
                 float[] slice = pcm.read(chunk[1] - CONTEXT, chunk[2] + CONTEXT);
                 if (rms(slice) < SILENCE_RMS) continue;
                 long durationMs = (chunk[2] - chunk[1]) * 1000L / RATE;
@@ -128,7 +138,8 @@ final class LocalTranscriptionEngine {
                 result.add(Segment.of(chunk[1] * 1000L / RATE, chunk[2] * 1000L / RATE,
                         turns.get(chunk[0]).speaker, text));
             }
-            progress.onStep("Расшифровка", chunks.size(), chunks.size());
+            progress.onProgress(ProgressTracker.Stage.RECOGNIZE, 1f,
+                    "реплика " + chunks.size() + " из " + chunks.size());
         } finally {
             recognizer.release();
         }
@@ -278,7 +289,7 @@ final class LocalTranscriptionEngine {
     /**
      * Убирает «призрачных» говорящих: шумовые всплески кластеризация иногда считает отдельным человеком.
      * Говорящий с совсем малым временем речи передаёт свои реплики ближайшему соседу, остальные нумеруются
-     * заново в порядке появления.
+     * заново в порядке появления. Порог мягкий, чтобы на встречах с 6–8 людьми не терять тех, кто говорил мало.
      */
     private static void dropPhantomSpeakers(List<Turn> turns) {
         java.util.Map<Integer, Long> spoken = new java.util.HashMap<>();
@@ -289,7 +300,7 @@ final class LocalTranscriptionEngine {
             Long old = spoken.get(t.speaker);
             spoken.put(t.speaker, (old == null ? 0 : old) + d);
         }
-        long threshold = Math.max(8000, Math.round(total * 0.03));
+        long threshold = Math.max(4000, Math.round(total * 0.015));
         java.util.Set<Integer> tiny = new java.util.HashSet<>();
         for (java.util.Map.Entry<Integer, Long> e : spoken.entrySet()) {
             if (e.getValue() < threshold) tiny.add(e.getKey());
