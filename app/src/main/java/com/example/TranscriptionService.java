@@ -24,7 +24,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Фоновая обработка записей: загрузка моделей, декодирование, диаризация и расшифровка.
+ * Фоновая обработка записей: загрузка моделей, декодирование, шумоподавление, диаризация и расшифровка.
  * Работает как служба переднего плана, поэтому не прерывается при сворачивании приложения и блокировке экрана.
  */
 public class TranscriptionService extends Service {
@@ -38,8 +38,7 @@ public class TranscriptionService extends Service {
 
     private static final AtomicInteger PENDING = new AtomicInteger(0);
     private static volatile long activeId = -1;
-    private static volatile String activeLabel = "";
-    private static volatile int activePercent = -1;
+    private static volatile ProgressTracker activeTracker = null;
     private static volatile boolean modelsBusy = false;
     private static volatile String modelsLabel = "";
     private static volatile int modelsPercent = -1;
@@ -56,14 +55,16 @@ public class TranscriptionService extends Service {
         return PENDING.get() > 0;
     }
 
-    /** Строка прогресса для записи, которая обрабатывается сейчас; иначе пустая. */
+    /** Строка прогресса для записи, которая обрабатывается сейчас: этап, «N из M», процент, время до конца. */
     static String progressLabel(long recordingId) {
-        return recordingId == activeId ? activeLabel : "";
+        ProgressTracker tracker = activeTracker;
+        return recordingId == activeId && tracker != null ? tracker.label() : "";
     }
 
-    /** Доля выполнения 0..100 для записи в работе или -1, если неизвестна. */
+    /** Общая доля выполнения 0..100 для записи в работе или -1, если неизвестна. */
     static int progressPercent(long recordingId) {
-        return recordingId == activeId ? activePercent : -1;
+        ProgressTracker tracker = activeTracker;
+        return recordingId == activeId && tracker != null ? tracker.percent() : -1;
     }
 
     static boolean isDownloadingModels() { return modelsBusy; }
@@ -119,6 +120,7 @@ public class TranscriptionService extends Service {
                 process(id);
             } finally {
                 activeId = -1;
+                activeTracker = null;
                 PENDING.decrementAndGet();
                 main.post(this::finishIfIdle);
             }
@@ -172,33 +174,57 @@ public class TranscriptionService extends Service {
             File audio = new File(recording.audioPath);
             if (!audio.isFile()) throw new IOException("Аудиофайл не найден");
 
+            final boolean denoise = settings.denoise();
+            final ProgressTracker tracker = new ProgressTracker(denoise);
             activeId = id;
-            report(id, "Подготовка", -1);
+            activeTracker = tracker;
+            tracker.update(ProgressTracker.Stage.DECODE, -1f, "");
+            report(id);
 
             if (!models.installed()) db.setStatus(id, Status.MODELS, "");
-            ModelRepository.Models files = models.ensure((label, percent) -> report(id, label, percent));
+            ModelRepository.Models files = models.ensure((label, percent) -> {
+                tracker.setNote(label, percent);
+                report(id);
+            });
+            File denoiseModel = denoise ? models.ensureDenoiser((label, percent) -> {
+                tracker.setNote(label, percent);
+                report(id);
+            }) : null;
+            tracker.setNote(null, -1);
 
             db.setStatus(id, Status.DECODING, "");
-            report(id, "Подготовка аудио", -1);
+            tracker.update(ProgressTracker.Stage.DECODE, -1f, "");
+            report(id);
             File pcmFile = new File(getCacheDir(), "pcm_" + id + ".raw");
+            File denoisedFile = new File(getCacheDir(), "pcm_" + id + "_dn.raw");
             long durationMs;
             LocalTranscriptionEngine.Result result;
+            int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
             try {
                 AudioDecoder.Pcm pcm = AudioDecoder.decodeToPcm(recording.audioPath, pcmFile);
                 durationMs = pcm.durationMs();
 
+                if (denoise) {
+                    tracker.update(ProgressTracker.Stage.DENOISE, 0f, "");
+                    report(id);
+                    pcm = Denoiser.apply(pcm, denoiseModel, denoisedFile, threads, fraction -> {
+                        tracker.update(ProgressTracker.Stage.DENOISE, fraction, "");
+                        report(id);
+                    });
+                }
+
                 db.setStatus(id, Status.RECOGNIZING, "");
-                report(id, "Расшифровка", -1);
-                int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
                 result = LocalTranscriptionEngine.process(
                         pcm, files.encoder, files.decoder, files.tokens, files.segmentation, files.embedding,
-                        settings.language(), threads, settings.speakerCount(), (stage, done, total) -> {
-                            if (total > 0) report(id, stage + " · " + done + " из " + total, done * 100 / total);
-                            else report(id, stage, -1);
+                        settings.language(), threads, settings.speakerCount(), (stage, fraction, detail) -> {
+                            tracker.update(stage, fraction, detail);
+                            report(id);
                         });
             } finally {
                 //noinspection ResultOfMethodCallIgnored
                 pcmFile.delete();
+                //noinspection ResultOfMethodCallIgnored
+                denoisedFile.delete();
             }
 
             List<Segment> segments = result.segments;
@@ -216,13 +242,15 @@ public class TranscriptionService extends Service {
         }
     }
 
-    private void report(long id, String label, int percent) {
-        activeLabel = label;
-        activePercent = percent;
+    /** Обновляет интерфейс и уведомление по текущему состоянию трекера. */
+    private void report(long id) {
         db.notifyChanged(id);
+        ProgressTracker tracker = activeTracker;
+        if (tracker == null) return;
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
-            manager.notify(PROGRESS_NOTIFICATION, progressNotification("Расшифровка записи", label, percent));
+            manager.notify(PROGRESS_NOTIFICATION,
+                    progressNotification("Расшифровка записи", tracker.label(), tracker.percent()));
         }
     }
 
