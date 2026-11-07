@@ -12,13 +12,18 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.widget.Toast;
 
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,6 +38,8 @@ public class TranscriptionService extends Service {
     static final String ACTION_MODELS = "com.example.action.DOWNLOAD_MODELS";
     /** Расшифровка уже есть (получена во время записи): нужно только определить говорящих. */
     static final String EXTRA_SPEAKERS_ONLY = "speakers_only";
+    /** Номера реплик (idx), которые нужно расшифровать заново; остальная запись не меняется. */
+    static final String EXTRA_FRAGMENTS = "fragment_idx";
 
     private static final String CHANNEL_PROGRESS = "transcription";
     private static final String CHANNEL_DONE = "transcription_done";
@@ -91,6 +98,13 @@ public class TranscriptionService extends Service {
         ContextCompat.startForegroundService(context, intent);
     }
 
+    /** Ставит в очередь повторную расшифровку выбранных реплик. Время и говорящие сохраняются. */
+    static void enqueueFragments(Context context, long recordingId, int[] indexes) {
+        Intent intent = new Intent(context, TranscriptionService.class)
+                .putExtra(EXTRA_ID, recordingId).putExtra(EXTRA_FRAGMENTS, indexes);
+        ContextCompat.startForegroundService(context, intent);
+    }
+
     /** Ставит запись в очередь. Бросает исключение, если система не разрешает запуск из фона. */
     static void enqueue(Context context, long recordingId) {
         Intent intent = new Intent(context, TranscriptionService.class).putExtra(EXTRA_ID, recordingId);
@@ -123,11 +137,17 @@ public class TranscriptionService extends Service {
             return START_NOT_STICKY;
         }
         final boolean speakersOnly = intent.getBooleanExtra(EXTRA_SPEAKERS_ONLY, false);
+        final int[] fragments = intent.getIntArrayExtra(EXTRA_FRAGMENTS);
+        // Для фрагментов запоминаем прежний статус: после работы запись должна вернуться к нему.
+        Recording before = fragments != null ? db.get(id) : null;
+        final String previousStatus = before == null ? Status.DONE : before.status;
+        final String previousError = before == null ? "" : before.error;
         PENDING.incrementAndGet();
         db.setStatus(id, Status.QUEUED, "");
         worker.execute(() -> {
             try {
-                if (speakersOnly) processSpeakers(id);
+                if (fragments != null) processFragments(id, fragments, previousStatus, previousError);
+                else if (speakersOnly) processSpeakers(id);
                 else process(id);
             } finally {
                 activeId = -1;
@@ -250,6 +270,71 @@ public class TranscriptionService extends Service {
                     : e.getMessage() == null || e.getMessage().trim().isEmpty()
                     ? e.getClass().getSimpleName() : e.getMessage();
             db.setStatus(id, Status.ERROR, message);
+        }
+    }
+
+    /**
+     * Повторная расшифровка выбранных реплик. Меняется только текст: время и говорящие остаются.
+     * Любой исход возвращает запись в прежний статус, чтобы ошибка фрагмента не прятала готовую расшифровку.
+     */
+    private void processFragments(long id, int[] indexes, String previousStatus, String previousError) {
+        File pcmFile = new File(getCacheDir(), "pcm_" + id + "_part.raw");
+        String status = Status.isBusy(previousStatus) ? Status.DONE : previousStatus;
+        try {
+            Recording recording = db.get(id);
+            if (recording == null) return;
+            File audio = new File(recording.audioPath);
+            if (!audio.isFile()) throw new IOException("Аудиофайл не найден");
+
+            Set<Integer> wanted = new HashSet<>();
+            for (int i : indexes) wanted.add(i);
+            List<Segment> targets = new ArrayList<>();
+            for (Segment s : db.segments(id)) if (wanted.contains(s.idx)) targets.add(s);
+            if (targets.isEmpty()) return;
+
+            final ProgressTracker tracker = ProgressTracker.fragments();
+            activeId = id;
+            activeTracker = tracker;
+            tracker.update(ProgressTracker.Stage.DECODE, -1f, "");
+            db.setStatus(id, Status.RECOGNIZING, "");
+            report(id);
+
+            ModelRepository.Models files = models.ensure((label, percent) -> {
+                tracker.setNote(label, percent);
+                report(id);
+            });
+            tracker.setNote(null, -1);
+
+            // Записи Real-life — это WAV 16 кГц самого приложения; всё остальное декодируем.
+            boolean own = audio.getName().startsWith("recording_") && audio.getName().endsWith(".wav");
+            AudioDecoder.Pcm pcm = own ? AudioDecoder.fromWav(audio, pcmFile)
+                    : AudioDecoder.decodeToPcm(recording.audioPath, pcmFile);
+            int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
+
+            Map<Integer, String> texts = LocalTranscriptionEngine.retranscribe(pcm, targets,
+                    files.encoder, files.decoder, files.tokens, settings.language(), threads,
+                    (stage, fraction, detail) -> {
+                        tracker.update(stage, fraction, detail);
+                        report(id);
+                    });
+
+            db.updateSegmentsText(id, texts);
+            db.replaceTasks(id, NoteBuilder.tasks(db.segments(id)));
+            final int missed = targets.size() - texts.size();
+            if (missed > 0) {
+                main.post(() -> Toast.makeText(this, "Речь не распознана в репликах: " + missed
+                        + ". Их текст остался прежним", Toast.LENGTH_LONG).show());
+            }
+        } catch (Throwable e) {
+            final String reason = e instanceof OutOfMemoryError ? "не хватило памяти"
+                    : e.getMessage() == null || e.getMessage().trim().isEmpty()
+                    ? e.getClass().getSimpleName() : e.getMessage();
+            main.post(() -> Toast.makeText(this, "Не удалось расшифровать реплики: " + reason,
+                    Toast.LENGTH_LONG).show());
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            pcmFile.delete();
+            db.setStatus(id, status, previousError);
         }
     }
 

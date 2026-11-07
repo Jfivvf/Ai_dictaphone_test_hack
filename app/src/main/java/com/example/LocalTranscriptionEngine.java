@@ -132,6 +132,63 @@ final class LocalTranscriptionEngine {
         return new Result(result, diarizationError);
     }
 
+    /**
+     * Повторная расшифровка выбранных реплик. Время и говорящие не меняются.
+     * Возвращает новый текст по idx реплики; реплики, где речь не распознана, в карту не попадают.
+     */
+    static java.util.Map<Integer, String> retranscribe(AudioDecoder.Pcm pcm, List<Segment> targets,
+                                                       File encoder, File decoder, File tokens,
+                                                       String language, int threads,
+                                                       Progress progress) throws Exception {
+        java.util.Map<Integer, String> result = new java.util.LinkedHashMap<>();
+        long total = 0;
+        for (Segment s : targets) total += Math.max(1, s.endMs - s.startMs);
+        long done = 0;
+        OfflineRecognizer recognizer = createRecognizer(encoder, decoder, tokens, language, threads);
+        try {
+            for (int i = 0; i < targets.size(); i++) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException("Обработка остановлена");
+                Segment s = targets.get(i);
+                progress.onProgress(ProgressTracker.Stage.RECOGNIZE, done / (float) total,
+                        "реплика " + (i + 1) + " из " + targets.size());
+                done += Math.max(1, s.endMs - s.startMs);
+
+                long from = Math.max(0, Math.min(pcm.samples, s.startMs * RATE / 1000));
+                long to = Math.max(from, Math.min(pcm.samples, s.endMs * RATE / 1000));
+                String text = transcribeRange(pcm, recognizer, from, to);
+                if (!text.isEmpty()) result.put(s.idx, text);
+            }
+            progress.onProgress(ProgressTracker.Stage.RECOGNIZE, 1f,
+                    "реплика " + targets.size() + " из " + targets.size());
+        } finally {
+            recognizer.release();
+        }
+        return result;
+    }
+
+    /** Расшифровывает отрезок; длинный режет по самым тихим местам из-за лимита Whisper в 30 с. */
+    private static String transcribeRange(AudioDecoder.Pcm pcm, OfflineRecognizer recognizer,
+                                          long from, long to) throws java.io.IOException {
+        StringBuilder text = new StringBuilder();
+        long position = from;
+        while (position < to) {
+            long end = to - position > MAX_CHUNK
+                    ? quietestPoint(pcm, position + MIN_SPLIT, position + MAX_CHUNK) : to;
+            float[] slice = pcm.read(position - CONTEXT, end + CONTEXT);
+            float level = rms(slice);
+            if (level >= SILENCE_RMS) {
+                long durationMs = (end - position) * 1000L / RATE;
+                String part = HallucinationFilter.clean(recognize(recognizer, slice), durationMs, level);
+                if (!part.isEmpty()) {
+                    if (text.length() > 0) text.append(' ');
+                    text.append(part);
+                }
+            }
+            position = end;
+        }
+        return text.toString();
+    }
+
     private static float rms(float[] data) {
         if (data.length == 0) return 0;
         double sum = 0;

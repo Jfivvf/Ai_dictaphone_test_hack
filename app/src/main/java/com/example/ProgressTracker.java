@@ -24,6 +24,8 @@ final class ProgressTracker {
     }
 
     private final boolean denoise;
+    /** Повторная расшифровка отдельных реплик: учитывается только этап распознавания. */
+    private final boolean recognizeOnly;
     private Stage stage = Stage.DECODE;
     private long stageStart = SystemClock.elapsedRealtime();
     private float fraction = -1f;
@@ -33,10 +35,21 @@ final class ProgressTracker {
     private int notePercent = -1;
 
     ProgressTracker(boolean denoise) {
+        this(denoise, false);
+    }
+
+    private ProgressTracker(boolean denoise, boolean recognizeOnly) {
         this.denoise = denoise;
+        this.recognizeOnly = recognizeOnly;
+    }
+
+    /** Для повторной расшифровки выбранных реплик: процент считается только по этапу распознавания. */
+    static ProgressTracker fragments() {
+        return new ProgressTracker(false, true);
     }
 
     private float weight(Stage s) {
+        if (recognizeOnly) return s == Stage.RECOGNIZE ? 1f : 0f;
         return s == Stage.DENOISE && !denoise ? 0f : s.weight;
     }
 

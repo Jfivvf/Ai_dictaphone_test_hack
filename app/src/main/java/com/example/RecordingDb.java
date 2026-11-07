@@ -328,22 +328,47 @@ final class RecordingDb extends SQLiteOpenHelper {
             v.put("text", text);
             db.update("segments", v, "recording_id=? AND idx=?",
                     new String[]{String.valueOf(recordingId), String.valueOf(idx)});
-            StringBuilder flat = new StringBuilder();
-            try (Cursor c = db.rawQuery("SELECT text FROM segments WHERE recording_id=? ORDER BY idx",
-                    new String[]{String.valueOf(recordingId)})) {
-                while (c.moveToNext()) {
-                    if (flat.length() > 0) flat.append('\n');
-                    flat.append(c.getString(0));
-                }
-            }
-            ContentValues t = new ContentValues();
-            t.put("transcript", flat.toString());
-            db.update("recordings", t, "id=?", new String[]{String.valueOf(recordingId)});
+            refreshFlatTranscript(db, recordingId);
             db.setTransactionSuccessful();
         } finally {
             db.endTransaction();
         }
         changed(recordingId);
+    }
+
+    /** Заменяет текст нескольких реплик одной транзакцией; время и говорящие не меняются. */
+    void updateSegmentsText(long recordingId, java.util.Map<Integer, String> texts) {
+        if (texts == null || texts.isEmpty()) return;
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (java.util.Map.Entry<Integer, String> e : texts.entrySet()) {
+                ContentValues v = new ContentValues();
+                v.put("text", e.getValue());
+                db.update("segments", v, "recording_id=? AND idx=?",
+                        new String[]{String.valueOf(recordingId), String.valueOf(e.getKey())});
+            }
+            refreshFlatTranscript(db, recordingId);
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+        changed(recordingId);
+    }
+
+    /** Пересобирает плоский текст записи (для поиска) из реплик. Вызывать внутри транзакции. */
+    private static void refreshFlatTranscript(SQLiteDatabase db, long recordingId) {
+        StringBuilder flat = new StringBuilder();
+        try (Cursor c = db.rawQuery("SELECT text FROM segments WHERE recording_id=? ORDER BY idx",
+                new String[]{String.valueOf(recordingId)})) {
+            while (c.moveToNext()) {
+                if (flat.length() > 0) flat.append('\n');
+                flat.append(c.getString(0));
+            }
+        }
+        ContentValues t = new ContentValues();
+        t.put("transcript", flat.toString());
+        db.update("recordings", t, "id=?", new String[]{String.valueOf(recordingId)});
     }
 
     // ---- задачи -------------------------------------------------------------------------------

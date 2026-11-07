@@ -345,11 +345,12 @@ final class Ui {
             float minHeight = barWidth;
             paint.setColor(color);
             for (int i = 0; i < n; i++) {
-                float value = bars[(head + i) % n];
+                // i = 0 — самый свежий столбик (слева), i = n - 1 — самый старый (справа).
+                float value = bars[(head - 1 - i + n) % n];
                 float barHeight = Math.max(minHeight, value * h);
                 float cx = slot * i + slot / 2f;
                 rect.set(cx - barWidth / 2f, (h - barHeight) / 2f, cx + barWidth / 2f, (h + barHeight) / 2f);
-                paint.setAlpha(value <= 0.001f ? 70 : 90 + Math.round(165f * i / n));
+                paint.setAlpha(value <= 0.001f ? 70 : 90 + Math.round(165f * (n - 1 - i) / n));
                 canvas.drawRoundRect(rect, barWidth / 2f, barWidth / 2f, paint);
             }
         }
